@@ -14,6 +14,10 @@ static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
 }
 
+static inline void outw(uint16_t port, uint16_t val) {
+    __asm__ volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
 void vga_update_cursor(void) {
     uint16_t pos = (uint16_t)(cursor_row * VGA_WIDTH + cursor_col);
     outb(0x3D4, 0x0F);
@@ -110,6 +114,22 @@ void print_banner(void) {
     vga_print("==================================================\n", 0x0B);
 }
 
+void system_shutdown(void) {
+    vga_print("[SYSTEM] Shutting down GibranOS...\n", 0x0E);
+
+    // Kirim sinyal ACPI Power Off untuk QEMU, Bochs, dan VirtualBox
+    outw(0x604, 0x2000);  // QEMU (versi baru)
+    outw(0xB004, 0x2000); // QEMU (versi lama) & Bochs
+    outw(0x4004, 0x3400); // VirtualBox
+
+    // Fallback jika dijalankan di hardware tanpa ACPI: hentikan CPU
+    vga_print("[SYSTEM] System halted.\n", 0x0C);
+    __asm__ volatile ("cli");
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
+
 static void cli_execute(const char* cmd) {
     // Lewati spasi di awal perintah
     while (*cmd == ' ') {
@@ -124,6 +144,7 @@ static void cli_execute(const char* cmd) {
         vga_print("  clear      - Membersihkan layar terminal VGA\n", 0x07);
         vga_print("  version    - Menampilkan informasi versi kernel\n", 0x07);
         vga_print("  echo <txt> - Menampilkan teks ke layar\n", 0x07);
+        vga_print("  shutdown   - Mematikan sistem operasi (Power Off)\n", 0x07);
     } else if (str_eq(cmd, "clear")) {
         vga_clear(0x07);
     } else if (str_eq(cmd, "version")) {
@@ -133,6 +154,8 @@ static void cli_execute(const char* cmd) {
         vga_putchar('\n', 0x07);
     } else if (str_eq(cmd, "echo")) {
         vga_putchar('\n', 0x07);
+    } else if (str_eq(cmd, "shutdown") || str_eq(cmd, "poweroff")) {
+        system_shutdown();
     } else {
         vga_print("Perintah tidak dikenal: '", 0x0C);
         vga_print(cmd, 0x0C);
