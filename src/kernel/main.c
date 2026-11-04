@@ -82,7 +82,30 @@ void vga_putchar(char c, uint8_t color) {
 
 void vga_print(const char* str, uint8_t color) {
     for (size_t i = 0; str[i] != '\0'; i++) {
-        vga_putchar(str[i], color);
+        uint8_t ch = (uint8_t)str[i];
+
+        /* Konversi karakter UTF-8 block/box-drawing ke CP437 VGA */
+        if (ch == 0xE2 && (uint8_t)str[i + 1] != '\0' && (uint8_t)str[i + 2] != '\0') {
+            uint8_t b1 = (uint8_t)str[i + 1];
+            uint8_t b2 = (uint8_t)str[i + 2];
+            if (b1 == 0x96 && b2 == 0x88) {
+                ch = 0xDB; /* █ */
+                i += 2;
+            } else if (b1 == 0x95) {
+                if (b2 == 0x90)      ch = 0xCD; /* ═ */
+                else if (b2 == 0x91) ch = 0xBA; /* ║ */
+                else if (b2 == 0x94) ch = 0xC9; /* ╔ */
+                else if (b2 == 0x97) ch = 0xBB; /* ╗ */
+                else if (b2 == 0x9A) ch = 0xC8; /* ╚ */
+                else if (b2 == 0x9D) ch = 0xBC; /* ╝ */
+                i += 2;
+            } else if (b1 == 0x94 && b2 == 0x84) {
+                ch = 0xC4; /* ┄ -> ─ */
+                i += 2;
+            }
+        }
+
+        vga_putchar((char)ch, color);
     }
 }
 
@@ -106,11 +129,12 @@ static int str_starts_with(const char* str, const char* prefix) {
 
 void print_banner(void) {
     vga_print("==================================================\n", 0x0B);
-    vga_print("   ____ _ _                      ___  ____        \n", 0x0B);
-    vga_print("  / ___(_) |__  _ __ __ _ _ __  / _ \\/ ___|      \n", 0x0B);
-    vga_print(" | |  _| | '_ \\| '__/ _` | '_ \\| | | \\___ \\   \n", 0x0B);
-    vga_print(" | |_| | | |_) | | | (_| | | | | |_| |___) |      \n", 0x0B);
-    vga_print("  \\____|_|_.__/|_|  \\__,_|_| |_|\\___/|____/    \n", 0x0B);
+    vga_print("     /\\          ██████╗  ██████╗ ███████╗\n", 0x0B);
+    vga_print("    /  \\        ██╔════╝ ██╔═══██╗██╔════╝\n", 0x0B);
+    vga_print("   / /\\ \\       ██║  ███╗██║   ██║███████╗\n", 0x0B);
+    vga_print("  / /  \\ \\      ██║   ██║██║   ██║╚════██║\n", 0x0B);
+    vga_print(" /_/__  \\_\\     ╚██████╔╝╚██████╔╝███████║\n", 0x0B);
+    vga_print("   \\_____/       ╚═════╝  ╚═════╝ ╚══════╝\n", 0x0B);
     vga_print("==================================================\n", 0x0B);
 }
 
