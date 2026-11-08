@@ -20,8 +20,14 @@ build/keyboard.o: src/drivers/keyboard.c src/drivers/keyboard.h
 build/process.o: src/kernel/process/process.c src/kernel/process/process.h
 	$(CC) $(CFLAGS) -c src/kernel/process/process.c -o build/process.o
 
-build/kernel.bin: build/boot.o build/main.o build/keyboard.o build/process.o
-	$(LD) $(LDFLAGS) build/boot.o build/main.o build/keyboard.o build/process.o -o build/kernel.bin
+build/gdt.o: src/arch/i386/gdt.c src/arch/i386/gdt.h
+	$(CC) $(CFLAGS) -c src/arch/i386/gdt.c -o build/gdt.o
+
+build/gdt_flush.o: src/arch/i386/gdt_flush.s
+	$(ASM) -f elf32 src/arch/i386/gdt_flush.s -o build/gdt_flush.o
+
+build/kernel.bin: build/boot.o build/main.o build/keyboard.o build/process.o build/gdt.o build/gdt_flush.o
+	$(LD) $(LDFLAGS) build/boot.o build/main.o build/keyboard.o build/process.o build/gdt.o build/gdt_flush.o -o build/kernel.bin
 
 run: build/kernel.bin
 	qemu-system-i386 -kernel build/kernel.bin
