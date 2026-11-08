@@ -1,3 +1,4 @@
+
 ASM = nasm
 CC  = clang
 LD  = ld.lld
@@ -16,8 +17,11 @@ build/main.o: src/kernel/main.c src/drivers/keyboard.h
 build/keyboard.o: src/drivers/keyboard.c src/drivers/keyboard.h
 	$(CC) $(CFLAGS) -c src/drivers/keyboard.c -o build/keyboard.o
 
-build/kernel.bin: build/boot.o build/main.o build/keyboard.o
-	$(LD) $(LDFLAGS) build/boot.o build/main.o build/keyboard.o -o build/kernel.bin
+build/process.o: src/kernel/process/process.c src/kernel/process/process.h
+	$(CC) $(CFLAGS) -c src/kernel/process/process.c -o build/process.o
+
+build/kernel.bin: build/boot.o build/main.o build/keyboard.o build/process.o
+	$(LD) $(LDFLAGS) build/boot.o build/main.o build/keyboard.o build/process.o -o build/kernel.bin
 
 run: build/kernel.bin
 	qemu-system-i386 -kernel build/kernel.bin
