@@ -11,7 +11,7 @@ all: build/kernel.bin
 build/boot.o: src/boot/boot.s
 	$(ASM) -f elf32 src/boot/boot.s -o build/boot.o
 
-build/main.o: src/kernel/main.c src/drivers/keyboard.h
+build/main.o: src/kernel/main.c src/drivers/keyboard.h src/kernel/process/process.h
 	$(CC) $(CFLAGS) -c src/kernel/main.c -o build/main.o
 
 build/keyboard.o: src/drivers/keyboard.c src/drivers/keyboard.h

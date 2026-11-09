@@ -57,13 +57,17 @@ static int find_free_thread_slot(void) {
 
 /* Menginisialisasi manajemen proses dan thread */
 void process_init(void) {
+    /* Menginisialisasi tabel proses */
     for (int i = 0; i < MAX_PROCESSES; i++) {
         process_table[i].pid = 0;
+        process_table[i].name[0] = '\0';
         process_table[i].state = PROCESS_TERMINATED;
-        process_table[i].used = 0;
+        process_table[i].privilege = PRIVILEGE_KERNEL;
         process_table[i].main_thread = NULL;
+        process_table[i].used = 0;
     }
 
+    /* Menginisialisasi tabel thread */
     for (int i = 0; i < MAX_THREADS; i++) {
         thread_table[i].tid = 0;
         thread_table[i].state = PROCESS_TERMINATED;
@@ -75,22 +79,10 @@ void process_init(void) {
         thread_table[i].next = NULL;
     }
 
+    /* Mengatur ulang ID dan thread aktif */
     current_thread = NULL;
     next_pid = 1;
     next_tid = 1;
-
-    /* Membuat proses kernel awal */
-    pcb_t* kernel_proc = process_create(
-        "kernel_idle",
-        NULL,
-        0,
-        PRIVILEGE_KERNEL
-    );
-
-    if (kernel_proc != NULL && kernel_proc->main_thread != NULL) {
-        process_set_state(kernel_proc->main_thread, PROCESS_RUNNING);
-        current_thread = kernel_proc->main_thread;
-    }
 }
 
 /* Membuat proses baru beserta thread utamanya */
@@ -100,9 +92,16 @@ pcb_t* process_create(
     uint32_t priority,
     privilege_level_t priv
 ) {
+    /* Entry point wajib tersedia */
+    if (entry_point == NULL) {
+        return NULL;
+    }
+
+    /* Mencari slot proses dan thread kosong */
     int process_slot = find_free_process_slot();
     int thread_slot = find_free_thread_slot();
 
+    /* Memastikan slot tersedia */
     if (process_slot < 0 || thread_slot < 0) {
         return NULL;
     }
@@ -133,41 +132,35 @@ pcb_t* process_create(
     thread->stack_base =
         (uint32_t)&thread_stacks[thread_slot][0];
 
-    if (entry_point != NULL) {
-        /*
-         * Membuat konteks awal yang menyerupai
-         * stack setelah interrupt timer.
-         */
-        cpu_context_t* ctx =
-            (cpu_context_t*)(stack_top - sizeof(cpu_context_t));
+    /* Membuat konteks CPU awal thread */
+    cpu_context_t* ctx =
+        (cpu_context_t*)(stack_top - sizeof(cpu_context_t));
 
-        ctx->gs = 0x10;
-        ctx->fs = 0x10;
-        ctx->es = 0x10;
-        ctx->ds = 0x10;
+    ctx->gs = 0x10;
+    ctx->fs = 0x10;
+    ctx->es = 0x10;
+    ctx->ds = 0x10;
 
-        ctx->edi = 0;
-        ctx->esi = 0;
-        ctx->ebp = 0;
-        ctx->esp_dummy = 0;
+    ctx->edi = 0;
+    ctx->esi = 0;
+    ctx->ebp = 0;
+    ctx->esp_dummy = 0;
 
-        ctx->ebx = 0;
-        ctx->edx = 0;
-        ctx->ecx = 0;
-        ctx->eax = 0;
+    ctx->ebx = 0;
+    ctx->edx = 0;
+    ctx->ecx = 0;
+    ctx->eax = 0;
 
-        ctx->interrupt_number = 32;
-        ctx->error_code = 0;
+    ctx->interrupt_number = 32;
+    ctx->error_code = 0;
 
-        ctx->eip = (uint32_t)entry_point;
-        ctx->cs = 0x08;
-        ctx->eflags = 0x202;
+    ctx->eip = (uint32_t)entry_point;
+    ctx->cs = 0x08;
+    ctx->eflags = 0x202;
 
-        thread->esp = (uint32_t)ctx;
-    } else {
-        thread->esp = stack_top;
-    }
+    thread->esp = (uint32_t)ctx;
 
+    /* Memasukkan thread ke status READY */
     process_set_state(thread, PROCESS_READY);
 
     return proc;

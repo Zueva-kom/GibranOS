@@ -189,7 +189,6 @@ static void cli_execute(const char* cmd) {
 }
 
 void kernel_main(void) {
-    process_init();
     char cmd_buffer[CMD_MAX_LEN];
     size_t cmd_len = 0;
 
