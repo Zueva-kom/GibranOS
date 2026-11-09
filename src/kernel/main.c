@@ -1,6 +1,7 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "drivers/keyboard.h"
+#include "kernel/process/process.h"
 
 #define VGA_WIDTH  80
 #define VGA_HEIGHT 25
