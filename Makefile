@@ -20,6 +20,9 @@ build/keyboard.o: src/drivers/keyboard.c src/drivers/keyboard.h
 build/process.o: src/kernel/process/process.c src/kernel/process/process.h
 	$(CC) $(CFLAGS) -c src/kernel/process/process.c -o build/process.o
 
+build/heap.o: src/kernel/memory/heap.c src/kernel/memory/heap.h
+	$(CC) $(CFLAGS) -c src/kernel/memory/heap.c -o build/heap.o
+
 build/gdt.o: src/arch/i386/gdt.c src/arch/i386/gdt.h
 	$(CC) $(CFLAGS) -c src/arch/i386/gdt.c -o build/gdt.o
 
@@ -32,8 +35,8 @@ build/vfs.o: src/kernel/fs/vfs.c src/kernel/fs/vfs.h
 build/game.o: src/kernel/game/game.c src/kernel/game/game.h src/kernel/fs/vfs.h src/drivers/keyboard.h
 	$(CC) $(CFLAGS) -c src/kernel/game/game.c -o build/game.o
 
-build/kernel.bin: build/boot.o build/main.o build/keyboard.o build/process.o build/gdt.o build/gdt_flush.o build/vfs.o build/game.o
-	$(LD) $(LDFLAGS) build/boot.o build/main.o build/keyboard.o build/process.o build/gdt.o build/gdt_flush.o build/vfs.o build/game.o -o build/kernel.bin
+build/kernel.bin: build/boot.o build/main.o build/keyboard.o build/process.o build/heap.o build/gdt.o build/gdt_flush.o build/vfs.o build/game.o
+	$(LD) $(LDFLAGS) build/boot.o build/main.o build/keyboard.o build/process.o build/heap.o build/gdt.o build/gdt_flush.o build/vfs.o build/game.o -o build/kernel.bin
 
 run: build/kernel.bin
 	qemu-system-i386 -kernel build/kernel.bin

@@ -1,4 +1,4 @@
-#include "memory/heap.h"
+#include "kernel/memory/heap.h"
 
 static uint8_t heap_area[HEAP_SIZE] __attribute__((aligned(16)));
 static heap_block_t* free_list = NULL;
