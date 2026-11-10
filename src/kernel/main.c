@@ -4,6 +4,8 @@
 #include "kernel/process/process.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/game/game.h"
+#include "kernel/memory/heap.h"
+#include "drivers/serial.h"
 
 #define VGA_WIDTH        80
 #define VGA_HEIGHT       25
@@ -258,6 +260,9 @@ static void cli_execute(const char* cmd) {
         vga_print("  read <nama>              - Membaca isi berkas teks\n", 0x07);
         vga_print("  update <nama> <isi_baru> - Memperbarui isi berkas teks\n", 0x07);
         vga_print("  delete <nama>            - Menghapus berkas teks\n", 0x07);
+        vga_print("[Memori, Proses, Sinkronisasi & Keamanan]\n", 0x0B);
+        vga_print("  meminfo                  - Menampilkan kapasitas heap (terpakai & bebas)\n", 0x07);
+        vga_print("  test_mem                 - Demo alokasi, free, & penanganan Out of Memory\n", 0x07);
     } else if (str_eq(cmd, "clear")) {
         vga_clear(0x07);
     } else if (str_eq(cmd, "version")) {
@@ -368,6 +373,11 @@ static void cli_execute(const char* cmd) {
                 vga_print("[VFS] Gagal menghapus berkas.\n", 0x0C);
             }
         }
+    } else if (str_eq(cmd, "meminfo")) {
+        heap_print_info();
+    } else if (str_eq(cmd, "test_mem")) {
+        heap_test_alloc();
+        heap_test_oom();
     } else if (str_eq(cmd, "shutdown") || str_eq(cmd, "poweroff")) {
         system_shutdown();
     } else {
@@ -384,10 +394,16 @@ void kernel_main(void) {
     vga_clear(0x07);
     keyboard_init();
     vfs_init();
+    serial_init();
+    heap_init();
+    heap_install_oom_warning();
 
     print_banner();
     vga_print("[BOOT] GibranOS Kernel Initialized.\n", 0x0A);
     vga_print("[VFS]  RAMDisk Initialized (words.txt, scores.txt loaded).\n", 0x0A);
+    vga_print("[MEM]  Kernel Heap Allocator Ready (64 KB, first-fit).\n", 0x0A);
+    vga_print(serial_is_ready() ? "[IO]   Serial UART COM1 Ready (38400 8N1).\n"
+                                : "[IO]   Serial UART COM1 tidak terdeteksi.\n", 0x0A);
     vga_print("[IO]   PS/2 Keyboard Driver Ready. Ketik 'help' untuk mulai.\n\n", 0x0A);
     vga_print("GibranOS-CLI $ ", 0x0F);
 
