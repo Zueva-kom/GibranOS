@@ -80,6 +80,12 @@ char keyboard_poll_char(void) {
         return 0;
     }
 
+    // Tombol navigasi untuk scroll layar (Arrow Up/Down & Page Up/Down)
+    if (scancode == 0x48) return KEY_UP;
+    if (scancode == 0x50) return KEY_DOWN;
+    if (scancode == 0x49) return KEY_PGUP;
+    if (scancode == 0x51) return KEY_PGDN;
+
     if (scancode >= 128) {
         return 0;
     }

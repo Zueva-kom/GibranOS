@@ -2,14 +2,18 @@
 #include <stddef.h>
 #include "drivers/keyboard.h"
 #include "kernel/process/process.h"
+#include "kernel/fs/vfs.h"
 
-#define VGA_WIDTH  80
-#define VGA_HEIGHT 25
-#define CMD_MAX_LEN 128
+#define VGA_WIDTH        80
+#define VGA_HEIGHT       25
+#define SCROLLBACK_LINES 200
+#define CMD_MAX_LEN      128
 
 volatile uint16_t* vga_buffer = (uint16_t*)0xB8000;
+static volatile uint16_t history_buffer[SCROLLBACK_LINES][VGA_WIDTH];
 int cursor_row = 0;
 int cursor_col = 0;
+static int scroll_offset = 0;
 
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -19,39 +23,92 @@ static inline void outw(uint16_t port, uint16_t val) {
     __asm__ volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
 }
 
+static int get_max_scroll_offset(void) {
+    if (cursor_row >= VGA_HEIGHT) {
+        return cursor_row - (VGA_HEIGHT - 1);
+    }
+    return 0;
+}
+
 void vga_update_cursor(void) {
-    uint16_t pos = (uint16_t)(cursor_row * VGA_WIDTH + cursor_col);
+    int base_row = get_max_scroll_offset();
+    int view_start = base_row - scroll_offset;
+    int screen_row = cursor_row - view_start;
+    uint16_t pos;
+
+    if (screen_row >= 0 && screen_row < VGA_HEIGHT) {
+        pos = (uint16_t)(screen_row * VGA_WIDTH + cursor_col);
+    } else {
+        /* Sembunyikan kursor di luar layar saat sedang melihat riwayat di atas */
+        pos = (uint16_t)(VGA_WIDTH * VGA_HEIGHT);
+    }
+
     outb(0x3D4, 0x0F);
     outb(0x3D5, (uint8_t)(pos & 0xFF));
     outb(0x3D4, 0x0E);
     outb(0x3D5, (uint8_t)((pos >> 8) & 0xFF));
 }
 
-void vga_scroll(uint8_t color) {
-    if (cursor_row < VGA_HEIGHT) {
-        return;
-    }
-    for (int row = 1; row < VGA_HEIGHT; row++) {
+static void vga_render(void) {
+    int base_row = get_max_scroll_offset();
+    int view_start = base_row - scroll_offset;
+
+    for (int row = 0; row < VGA_HEIGHT; row++) {
+        int hist_row = view_start + row;
         for (int col = 0; col < VGA_WIDTH; col++) {
-            vga_buffer[(row - 1) * VGA_WIDTH + col] = vga_buffer[row * VGA_WIDTH + col];
+            if (hist_row >= 0 && hist_row < SCROLLBACK_LINES) {
+                vga_buffer[row * VGA_WIDTH + col] = history_buffer[hist_row][col];
+            } else {
+                vga_buffer[row * VGA_WIDTH + col] = ((uint16_t)0x07 << 8) | ' ';
+            }
         }
     }
-    for (int col = 0; col < VGA_WIDTH; col++) {
-        vga_buffer[(VGA_HEIGHT - 1) * VGA_WIDTH + col] = ((uint16_t)color << 8) | ' ';
-    }
-    cursor_row = VGA_HEIGHT - 1;
-}
-
-void vga_clear(uint8_t color) {
-    for (int i = 0; i < VGA_WIDTH * VGA_HEIGHT; i++) {
-        vga_buffer[i] = ((uint16_t)color << 8) | ' ';
-    }
-    cursor_row = 0;
-    cursor_col = 0;
     vga_update_cursor();
 }
 
+void vga_scroll_view(int delta_lines) {
+    int max_offset = get_max_scroll_offset();
+    scroll_offset += delta_lines;
+
+    if (scroll_offset < 0) {
+        scroll_offset = 0;
+    } else if (scroll_offset > max_offset) {
+        scroll_offset = max_offset;
+    }
+
+    vga_render();
+}
+
+void vga_scroll(uint8_t color) {
+    if (cursor_row < SCROLLBACK_LINES) {
+        return;
+    }
+    for (int row = 1; row < SCROLLBACK_LINES; row++) {
+        for (int col = 0; col < VGA_WIDTH; col++) {
+            history_buffer[row - 1][col] = history_buffer[row][col];
+        }
+    }
+    for (int col = 0; col < VGA_WIDTH; col++) {
+        history_buffer[SCROLLBACK_LINES - 1][col] = ((uint16_t)color << 8) | ' ';
+    }
+    cursor_row = SCROLLBACK_LINES - 1;
+}
+
+void vga_clear(uint8_t color) {
+    for (int row = 0; row < SCROLLBACK_LINES; row++) {
+        for (int col = 0; col < VGA_WIDTH; col++) {
+            history_buffer[row][col] = ((uint16_t)color << 8) | ' ';
+        }
+    }
+    cursor_row = 0;
+    cursor_col = 0;
+    scroll_offset = 0;
+    vga_render();
+}
+
 void vga_putchar(char c, uint8_t color) {
+    scroll_offset = 0;
+
     if (c == '\n') {
         cursor_col = 0;
         cursor_row++;
@@ -62,7 +119,7 @@ void vga_putchar(char c, uint8_t color) {
             cursor_row--;
             cursor_col = VGA_WIDTH - 1;
         }
-        vga_buffer[cursor_row * VGA_WIDTH + cursor_col] = ((uint16_t)color << 8) | ' ';
+        history_buffer[cursor_row][cursor_col] = ((uint16_t)color << 8) | ' ';
     } else if (c == '\t') {
         int spaces = 4 - (cursor_col % 4);
         for (int i = 0; i < spaces; i++) {
@@ -70,7 +127,7 @@ void vga_putchar(char c, uint8_t color) {
         }
         return;
     } else {
-        vga_buffer[cursor_row * VGA_WIDTH + cursor_col] = ((uint16_t)color << 8) | (uint8_t)c;
+        history_buffer[cursor_row][cursor_col] = ((uint16_t)color << 8) | (uint8_t)c;
         cursor_col++;
         if (cursor_col >= VGA_WIDTH) {
             cursor_col = 0;
@@ -78,7 +135,7 @@ void vga_putchar(char c, uint8_t color) {
         }
     }
     vga_scroll(0x07);
-    vga_update_cursor();
+    vga_render();
 }
 
 void vga_print(const char* str, uint8_t color) {
@@ -155,6 +212,26 @@ void system_shutdown(void) {
     }
 }
 
+/* Memisahkan argumen pertama (nama berkas) dan sisa string (isi berkas) */
+static const char* extract_token(const char* str, char* out_token, size_t max_len) {
+    size_t i = 0;
+
+    while (*str == ' ') {
+        str++;
+    }
+
+    while (*str != '\0' && *str != ' ' && i < max_len - 1) {
+        out_token[i++] = *str++;
+    }
+    out_token[i] = '\0';
+
+    while (*str == ' ') {
+        str++;
+    }
+
+    return str;
+}
+
 static void cli_execute(const char* cmd) {
     // Lewati spasi di awal perintah
     while (*cmd == ' ') {
@@ -164,12 +241,19 @@ static void cli_execute(const char* cmd) {
     if (*cmd == '\0') {
         return;
     } else if (str_eq(cmd, "help")) {
-        vga_print("Perintah Internal GibranOS-CLI:\n", 0x0E);
-        vga_print("  help       - Menampilkan daftar perintah ini\n", 0x07);
-        vga_print("  clear      - Membersihkan layar terminal VGA\n", 0x07);
-        vga_print("  version    - Menampilkan informasi versi kernel\n", 0x07);
-        vga_print("  echo <txt> - Menampilkan teks ke layar\n", 0x07);
-        vga_print("  shutdown   - Mematikan sistem operasi (Power Off)\n", 0x07);
+        vga_print("=== DAFTAR PERINTAH GIBRANOS ===\n", 0x0E);
+        vga_print("[Umum]\n", 0x0B);
+        vga_print("  help                     - Menampilkan daftar perintah ini\n", 0x07);
+        vga_print("  clear                    - Membersihkan layar terminal VGA\n", 0x07);
+        vga_print("  version                  - Menampilkan informasi versi kernel\n", 0x07);
+        vga_print("  echo <teks>              - Menampilkan teks ke layar\n", 0x07);
+        vga_print("  shutdown                 - Mematikan sistem operasi (Power Off)\n", 0x07);
+        vga_print("[File System (RAMDisk VFS)]\n", 0x0B);
+        vga_print("  ls                       - Menampilkan daftar berkas di RAMDisk\n", 0x07);
+        vga_print("  create <nama> <isi>      - Membuat berkas teks baru\n", 0x07);
+        vga_print("  read <nama>              - Membaca isi berkas teks\n", 0x07);
+        vga_print("  update <nama> <isi_baru> - Memperbarui isi berkas teks\n", 0x07);
+        vga_print("  delete <nama>            - Menghapus berkas teks\n", 0x07);
     } else if (str_eq(cmd, "clear")) {
         vga_clear(0x07);
     } else if (str_eq(cmd, "version")) {
@@ -179,6 +263,105 @@ static void cli_execute(const char* cmd) {
         vga_putchar('\n', 0x07);
     } else if (str_eq(cmd, "echo")) {
         vga_putchar('\n', 0x07);
+    } else if (str_eq(cmd, "ls")) {
+        vfs_list_files();
+    } else if (str_starts_with(cmd, "create ") || str_eq(cmd, "create")) {
+        char filename[MAX_FILENAME];
+        const char* content = extract_token(cmd + 6, filename, MAX_FILENAME);
+
+        if (filename[0] == '\0') {
+            vga_print("[VFS] Penggunaan: create <nama_berkas> <isi>\n", 0x0E);
+        } else {
+            int res = vfs_create(filename, content, 0);
+            if (res == VFS_OK) {
+                vga_print("[VFS] Berkas '", 0x0A);
+                vga_print(filename, 0x0A);
+                vga_print("' berhasil dibuat.\n", 0x0A);
+            } else if (res == VFS_ERR_EXISTS) {
+                vga_print("[VFS] Gagal: Berkas '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' sudah ada.\n", 0x0C);
+            } else if (res == VFS_ERR_FULL) {
+                vga_print("[VFS] Gagal: Kapasitas RAMDisk penuh.\n", 0x0C);
+            } else {
+                vga_print("[VFS] Gagal membuat berkas.\n", 0x0C);
+            }
+        }
+    } else if (str_starts_with(cmd, "read ") || str_eq(cmd, "read")) {
+        char filename[MAX_FILENAME];
+        char buffer[MAX_FILESIZE];
+        extract_token(cmd + 4, filename, MAX_FILENAME);
+
+        if (filename[0] == '\0') {
+            vga_print("[VFS] Penggunaan: read <nama_berkas>\n", 0x0E);
+        } else {
+            int res = vfs_read(filename, buffer);
+            if (res == VFS_OK) {
+                vga_print("--- Isi Berkas: ", 0x0B);
+                vga_print(filename, 0x0F);
+                vga_print(" ---\n", 0x0B);
+                vga_print(buffer, 0x07);
+                vga_putchar('\n', 0x07);
+            } else if (res == VFS_ERR_NOT_FOUND) {
+                vga_print("[VFS] Gagal: Berkas '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' tidak ditemukan.\n", 0x0C);
+            } else if (res == VFS_ERR_PROTECTED) {
+                vga_print("[VFS] Akses ditolak: Berkas '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' diproteksi.\n", 0x0C);
+            } else {
+                vga_print("[VFS] Gagal membaca berkas.\n", 0x0C);
+            }
+        }
+    } else if (str_starts_with(cmd, "update ") || str_eq(cmd, "update")) {
+        char filename[MAX_FILENAME];
+        const char* new_content = extract_token(cmd + 6, filename, MAX_FILENAME);
+
+        if (filename[0] == '\0' || new_content[0] == '\0') {
+            vga_print("[VFS] Penggunaan: update <nama_berkas> <isi_baru>\n", 0x0E);
+        } else {
+            int res = vfs_update(filename, new_content);
+            if (res == VFS_OK) {
+                vga_print("[VFS] Berkas '", 0x0A);
+                vga_print(filename, 0x0A);
+                vga_print("' berhasil diperbarui.\n", 0x0A);
+            } else if (res == VFS_ERR_NOT_FOUND) {
+                vga_print("[VFS] Gagal: Berkas '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' tidak ditemukan.\n", 0x0C);
+            } else if (res == VFS_ERR_PROTECTED) {
+                vga_print("[VFS] Akses ditolak: Berkas sistem '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' terproteksi (hanya Admin).\n", 0x0C);
+            } else {
+                vga_print("[VFS] Gagal memperbarui berkas.\n", 0x0C);
+            }
+        }
+    } else if (str_starts_with(cmd, "delete ") || str_eq(cmd, "delete")) {
+        char filename[MAX_FILENAME];
+        extract_token(cmd + 6, filename, MAX_FILENAME);
+
+        if (filename[0] == '\0') {
+            vga_print("[VFS] Penggunaan: delete <nama_berkas>\n", 0x0E);
+        } else {
+            int res = vfs_delete(filename);
+            if (res == VFS_OK) {
+                vga_print("[VFS] Berkas '", 0x0A);
+                vga_print(filename, 0x0A);
+                vga_print("' berhasil dihapus.\n", 0x0A);
+            } else if (res == VFS_ERR_NOT_FOUND) {
+                vga_print("[VFS] Gagal: Berkas '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' tidak ditemukan.\n", 0x0C);
+            } else if (res == VFS_ERR_PROTECTED) {
+                vga_print("[VFS] Akses ditolak: Berkas sistem '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' terproteksi (hanya Admin).\n", 0x0C);
+            } else {
+                vga_print("[VFS] Gagal menghapus berkas.\n", 0x0C);
+            }
+        }
     } else if (str_eq(cmd, "shutdown") || str_eq(cmd, "poweroff")) {
         system_shutdown();
     } else {
@@ -194,16 +377,26 @@ void kernel_main(void) {
 
     vga_clear(0x07);
     keyboard_init();
+    vfs_init();
 
     print_banner();
     vga_print("[BOOT] GibranOS Kernel Initialized.\n", 0x0A);
+    vga_print("[VFS]  RAMDisk Initialized (words.txt, scores.txt loaded).\n", 0x0A);
     vga_print("[IO]   PS/2 Keyboard Driver Ready. Ketik 'help' untuk mulai.\n\n", 0x0A);
     vga_print("GibranOS-CLI $ ", 0x0F);
 
     while (1) {
         char c = keyboard_getchar();
 
-        if (c == '\n') {
+        if (c == KEY_UP) {
+            vga_scroll_view(1);
+        } else if (c == KEY_DOWN) {
+            vga_scroll_view(-1);
+        } else if (c == KEY_PGUP) {
+            vga_scroll_view(5);
+        } else if (c == KEY_PGDN) {
+            vga_scroll_view(-5);
+        } else if (c == '\n') {
             vga_putchar('\n', 0x07);
             cmd_buffer[cmd_len] = '\0';
             cli_execute(cmd_buffer);
