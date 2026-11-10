@@ -282,6 +282,40 @@ static void cli_execute(const char* cmd) {
         vga_print("[Memori, Proses, Sinkronisasi & Keamanan]\n", 0x0B);
         vga_print("  meminfo                  - Menampilkan kapasitas heap (terpakai & bebas)\n", 0x07);
         vga_print("  test_mem                 - Demo alokasi, free, & penanganan Out of Memory\n", 0x07);
+        vga_print("  ps                       - Menampilkan daftar proses dan thread\n", 0x07);
+    } else if (str_eq(cmd, "ps")) {
+        vga_print("=== PROCESS & THREAD LIST ===\n", 0x0E);
+        vga_print("Jumlah proses aktif: ", 0x07);
+        vga_print_number(process_get_count());
+        vga_putchar('\n', 0x07);
+        vga_print("PID  NAME                 STATE  TID  THREAD STATE\n", 0x0B);
+
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
+            pcb_t* proc = process_get_by_index(i);
+            if (proc == NULL) {
+                continue;
+            }
+
+            vga_print_number(proc->pid);
+            vga_print("    ", 0x07);
+            vga_print(proc->name, 0x07);
+            vga_print("    ", 0x07);
+            vga_print(process_state_to_str(proc->state), 0x07);
+            vga_print("    ", 0x07);
+
+            if (proc->main_thread != NULL) {
+                vga_print_number(proc->main_thread->tid);
+                vga_print("    ", 0x07);
+                vga_print(process_state_to_str(proc->main_thread->state), 0x07);
+            } else {
+                vga_print("-", 0x07);
+            }
+            vga_putchar('\n', 0x07);
+        }
+
+        if (process_get_count() == 0) {
+            vga_print("Belum ada proses yang dibuat.\n", 0x0E);
+        }
     } else if (str_eq(cmd, "clear")) {
         vga_clear(0x07);
     } else if (str_eq(cmd, "version")) {

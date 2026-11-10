@@ -206,3 +206,29 @@ const char* process_state_to_str(process_state_t state) {
             return "UNKNOWN";
     }
 }
+
+/* Mengambil proses berdasarkan indeks */
+pcb_t* process_get_by_index(uint32_t index) {
+    if (index >= MAX_PROCESSES) {
+        return NULL;
+    }
+
+    if (!process_table[index].used) {
+        return NULL;
+    }
+
+    return &process_table[index];
+}
+
+/* Menghitung jumlah proses yang aktif */
+uint32_t process_get_count(void) {
+    uint32_t count = 0;
+
+    for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
+        if (process_table[i].used) {
+            count++;
+        }
+    }
+
+    return count;
+}
