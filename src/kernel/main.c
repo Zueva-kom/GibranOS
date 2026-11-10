@@ -3,6 +3,7 @@
 #include "drivers/keyboard.h"
 #include "kernel/process/process.h"
 #include "kernel/fs/vfs.h"
+#include "kernel/game/game.h"
 
 #define VGA_WIDTH        80
 #define VGA_HEIGHT       25
@@ -49,7 +50,7 @@ void vga_update_cursor(void) {
     outb(0x3D5, (uint8_t)((pos >> 8) & 0xFF));
 }
 
-static void vga_render(void) {
+void vga_render(void) {
     int base_row = get_max_scroll_offset();
     int view_start = base_row - scroll_offset;
 
@@ -156,6 +157,8 @@ void vga_print(const char* str, uint8_t color) {
                 else if (b2 == 0x97) ch = 0xBB; /* ╗ */
                 else if (b2 == 0x9A) ch = 0xC8; /* ╚ */
                 else if (b2 == 0x9D) ch = 0xBC; /* ╝ */
+                else if (b2 == 0xA0) ch = 0xCC; /* ╠ */
+                else if (b2 == 0xA3) ch = 0xB9; /* ╣ */
                 i += 2;
             } else if (b1 == 0x94 && b2 == 0x84) {
                 ch = 0xC4; /* ┄ -> ─ */
@@ -242,11 +245,12 @@ static void cli_execute(const char* cmd) {
         return;
     } else if (str_eq(cmd, "help")) {
         vga_print("=== DAFTAR PERINTAH GIBRANOS ===\n", 0x0E);
-        vga_print("[Umum]\n", 0x0B);
+        vga_print("[Umum & Aplikasi]\n", 0x0B);
         vga_print("  help                     - Menampilkan daftar perintah ini\n", 0x07);
         vga_print("  clear                    - Membersihkan layar terminal VGA\n", 0x07);
         vga_print("  version                  - Menampilkan informasi versi kernel\n", 0x07);
         vga_print("  echo <teks>              - Menampilkan teks ke layar\n", 0x07);
+        vga_print("  game                     - Memulai permainan Monster Key-Typing\n", 0x07);
         vga_print("  shutdown                 - Mematikan sistem operasi (Power Off)\n", 0x07);
         vga_print("[File System (RAMDisk VFS)]\n", 0x0B);
         vga_print("  ls                       - Menampilkan daftar berkas di RAMDisk\n", 0x07);
@@ -263,6 +267,8 @@ static void cli_execute(const char* cmd) {
         vga_putchar('\n', 0x07);
     } else if (str_eq(cmd, "echo")) {
         vga_putchar('\n', 0x07);
+    } else if (str_eq(cmd, "game") || str_eq(cmd, "game start")) {
+        game_start();
     } else if (str_eq(cmd, "ls")) {
         vfs_list_files();
     } else if (str_starts_with(cmd, "create ") || str_eq(cmd, "create")) {

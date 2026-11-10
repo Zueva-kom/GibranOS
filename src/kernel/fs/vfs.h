@@ -28,6 +28,7 @@ void vfs_init(void); // Inisialisasi RAMDisk + buat words.txt & scores.txt bawaa
 int vfs_create(const char* name, const char* content, uint8_t is_protected);
 int vfs_read(const char* name, char* out_buffer);
 int vfs_update(const char* name, const char* new_content);
+int vfs_kernel_update(const char* name, const char* new_content);
 int vfs_delete(const char* name);
 void vfs_list_files(void); // Untuk perintah CLI: ls
 

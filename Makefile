@@ -11,7 +11,7 @@ all: build/kernel.bin
 build/boot.o: src/boot/boot.s
 	$(ASM) -f elf32 src/boot/boot.s -o build/boot.o
 
-build/main.o: src/kernel/main.c src/drivers/keyboard.h src/kernel/process/process.h src/kernel/fs/vfs.h
+build/main.o: src/kernel/main.c src/drivers/keyboard.h src/kernel/process/process.h src/kernel/fs/vfs.h src/kernel/game/game.h
 	$(CC) $(CFLAGS) -c src/kernel/main.c -o build/main.o
 
 build/keyboard.o: src/drivers/keyboard.c src/drivers/keyboard.h
@@ -29,8 +29,11 @@ build/gdt_flush.o: src/arch/i386/gdt_flush.s
 build/vfs.o: src/kernel/fs/vfs.c src/kernel/fs/vfs.h
 	$(CC) $(CFLAGS) -c src/kernel/fs/vfs.c -o build/vfs.o
 
-build/kernel.bin: build/boot.o build/main.o build/keyboard.o build/process.o build/gdt.o build/gdt_flush.o build/vfs.o
-	$(LD) $(LDFLAGS) build/boot.o build/main.o build/keyboard.o build/process.o build/gdt.o build/gdt_flush.o build/vfs.o -o build/kernel.bin
+build/game.o: src/kernel/game/game.c src/kernel/game/game.h src/kernel/fs/vfs.h src/drivers/keyboard.h
+	$(CC) $(CFLAGS) -c src/kernel/game/game.c -o build/game.o
+
+build/kernel.bin: build/boot.o build/main.o build/keyboard.o build/process.o build/gdt.o build/gdt_flush.o build/vfs.o build/game.o
+	$(LD) $(LDFLAGS) build/boot.o build/main.o build/keyboard.o build/process.o build/gdt.o build/gdt_flush.o build/vfs.o build/game.o -o build/kernel.bin
 
 run: build/kernel.bin
 	qemu-system-i386 -kernel build/kernel.bin

@@ -195,6 +195,21 @@ int vfs_update(const char* name, const char* new_content) {
     return VFS_OK;
 }
 
+/* Memperbarui isi berkas secara internal oleh Kernel (tanpa blokir guest) */
+int vfs_kernel_update(const char* name, const char* new_content) {
+    if (name == NULL || name[0] == '\0' || new_content == NULL) {
+        return VFS_ERR_INVALID;
+    }
+
+    int idx = find_file_index(name);
+    if (idx < 0) {
+        return VFS_ERR_NOT_FOUND;
+    }
+
+    ramdisk[idx].size = vfs_strncpy(ramdisk[idx].data, new_content, MAX_FILESIZE);
+    return VFS_OK;
+}
+
 /* Menghapus berkas dari RAMDisk */
 int vfs_delete(const char* name) {
     if (name == NULL || name[0] == '\0') {
