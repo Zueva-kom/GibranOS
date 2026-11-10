@@ -2,7 +2,7 @@
 #define MUTEX_H
 
 #include <stdint.h>
-#include "process/process.h"
+#include "../02_Pengelolaan_Proses_Thread/process.h"
 
 typedef struct {
     volatile uint8_t locked;      // Status kunci: 0 = Terbuka, 1 = Terkunci

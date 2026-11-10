@@ -1,4 +1,4 @@
-#include "sync/mutex.h"
+#include "mutex.h"
 
 void mutex_init(mutex_t* m) {
     if (!m) return;

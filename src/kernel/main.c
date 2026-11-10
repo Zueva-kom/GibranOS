@@ -1,11 +1,14 @@
 #include <stdint.h>
 #include <stddef.h>
 #include "drivers/keyboard.h"
-#include "kernel/process/process.h"
-#include "kernel/memory/heap.h"
-#include "kernel/fs/vfs.h"
+#include "kernel/02_Pengelolaan_Proses_Thread/process.h"
+#include "kernel/06_Alokator_Memori_Dinamis/heap.h"
+#include "kernel/07_Virtual_File_System/vfs.h"
 #include "kernel/game/game.h"
 #include "drivers/serial.h"
+#include "arch/i386/gdt.h"
+#include "arch/i386/idt.h"
+#include "arch/i386/timer.h"
 
 #define VGA_WIDTH        80
 #define VGA_HEIGHT       25
@@ -485,14 +488,22 @@ void kernel_main(void) {
     char cmd_buffer[CMD_MAX_LEN];
     size_t cmd_len = 0;
 
+    __asm__ volatile ("cli");
+
     vga_clear(0x07);
+
+    gdt_init();
+    idt_init();
+    timer_init();
+   
     heap_init();
-    process_init();
+    process_test();
     keyboard_init();
     vfs_init();
     serial_init();
 
     print_banner();
+
     vga_print("[BOOT] GibranOS Kernel Initialized.\n", 0x0A);
     vga_print("[VFS]  RAMDisk Initialized (words.txt, scores.txt loaded).\n", 0x0A);
     vga_print("[MEM]  Kernel Heap Allocator Ready (64 KB, first-fit).\n", 0x0A);
@@ -531,3 +542,4 @@ void kernel_main(void) {
         }
     }
 }
+

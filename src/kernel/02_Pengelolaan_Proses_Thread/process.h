@@ -120,6 +120,10 @@ tcb_t* process_get_current_thread(void);
 /* Mengubah status proses menjadi teks */
 const char* process_state_to_str(process_state_t state);
 
+/* Pengujian Process Management */
+void process_test(void);
+
+
 /* Mengambil data proses berdasarkan indeks */
 pcb_t* process_get_by_index(uint32_t index);
 

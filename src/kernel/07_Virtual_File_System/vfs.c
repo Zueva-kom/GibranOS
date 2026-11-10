@@ -1,4 +1,4 @@
-#include "kernel/fs/vfs.h"
+#include "vfs.h"
 
 /* Fungsi output layar VGA dari kernel/main.c */
 extern void vga_print(const char* str, uint8_t color);

@@ -207,6 +207,30 @@ const char* process_state_to_str(process_state_t state) {
     }
 }
 
+/* Fungsi untuk pengujian proses */
+static void test_task(void) {
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
+
+/* Pengujian Process Management */
+void process_test(void) {
+    process_init();
+
+    pcb_t* test_process = process_create(
+        "TestProcess",
+        test_task,
+        1,
+        PRIVILEGE_KERNEL
+    );
+
+    if (test_process == NULL) {
+        return;
+    }
+}
+
+
 /* Mengambil proses berdasarkan indeks */
 pcb_t* process_get_by_index(uint32_t index) {
     if (index >= MAX_PROCESSES) {
