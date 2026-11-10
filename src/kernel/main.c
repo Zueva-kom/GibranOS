@@ -9,6 +9,7 @@
 #include "arch/i386/gdt.h"
 #include "arch/i386/idt.h"
 #include "arch/i386/timer.h"
+#include "03_Penjadwalan_CPU_Preemptive/scheduler.h"
 
 #define VGA_WIDTH        80
 #define VGA_HEIGHT       25
@@ -20,6 +21,10 @@ static volatile uint16_t history_buffer[SCROLLBACK_LINES][VGA_WIDTH];
 int cursor_row = 0;
 int cursor_col = 0;
 static int scroll_offset = 0;
+
+/* Counter aktivitas WorkerA dan WorkerB untuk perintah schedtest */
+static volatile uint32_t worker_a_counter = 0;
+static volatile uint32_t worker_b_counter = 0;
 
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -268,24 +273,84 @@ static void cli_execute(const char* cmd) {
     if (*cmd == '\0') {
         return;
     } else if (str_eq(cmd, "help")) {
-        vga_print("=== DAFTAR PERINTAH GIBRANOS ===\n", 0x0E);
-        vga_print("[Umum & Aplikasi]\n", 0x0B);
-        vga_print("  help                     - Menampilkan daftar perintah ini\n", 0x07);
-        vga_print("  clear                    - Membersihkan layar terminal VGA\n", 0x07);
-        vga_print("  version                  - Menampilkan informasi versi kernel\n", 0x07);
-        vga_print("  echo <teks>              - Menampilkan teks ke layar\n", 0x07);
-        vga_print("  game                     - Memulai permainan Monster Key-Typing\n", 0x07);
-        vga_print("  shutdown                 - Mematikan sistem operasi (Power Off)\n", 0x07);
-        vga_print("[File System (RAMDisk VFS)]\n", 0x0B);
-        vga_print("  ls                       - Menampilkan daftar berkas di RAMDisk\n", 0x07);
-        vga_print("  create <nama> <isi>      - Membuat berkas teks baru\n", 0x07);
-        vga_print("  read <nama>              - Membaca isi berkas teks\n", 0x07);
-        vga_print("  update <nama> <isi_baru> - Memperbarui isi berkas teks\n", 0x07);
-        vga_print("  delete <nama>            - Menghapus berkas teks\n", 0x07);
-        vga_print("[Memori, Proses, Sinkronisasi & Keamanan]\n", 0x0B);
-        vga_print("  meminfo                  - Menampilkan kapasitas heap (terpakai & bebas)\n", 0x07);
-        vga_print("  test_mem                 - Demo alokasi, free, & penanganan Out of Memory\n", 0x07);
-        vga_print("  ps                       - Menampilkan daftar proses dan thread\n", 0x07);
+        vga_print("=====================================================================================\n", 0x0B);
+        vga_print("                         GIBRAN OS - DAFTAR PERINTAH\n", 0x0B);
+        vga_print("=====================================================================================\n", 0x0B);
+
+        vga_print("[1] DASAR SISTEM DAN ANTARMUKA PERINTAH\n", 0x0B);
+        vga_print("  Bagian ini berisi perintah dasar untuk menggunakan OS.\n", 0x07);
+        vga_print("  help                     - Melihat daftar perintah yang tersedia\n", 0x07);
+        vga_print("  clear                    - Membersihkan tampilan terminal\n", 0x07);
+        vga_print("  version                  - Melihat versi dan informasi kernel\n", 0x07);
+        vga_print("  echo <teks>              - Menampilkan teks yang dimasukkan\n", 0x07);
+        vga_print("  game                     - Menjalankan permainan Monster Key-Typing\n", 0x07);
+        vga_print("  shutdown                 - Mematikan GIBRAN OS dengan aman\n\n", 0x07);
+        
+        vga_print("[2-3] PENGELOLAAN PROSES, THREAD, DAN PENJADWALAN CPU\n", 0x0B);
+        vga_print("  Bagian ini mengelola proses dan thread yang dibuat kernel.\n", 0x07);
+        vga_print("  Penjadwal mengatur giliran thread menggunakan konsep Round Robin.\n", 0x07);
+        vga_print("  ps                       - Melihat PID, nama, dan status proses/thread\n", 0x07);
+        vga_print("  schedtest                - Melihat aktivitas counter WorkerA dan B\n\n", 0x07);
+
+        vga_print("[4] SINKRONISASI DAN MUTEX\n", 0x0B);
+        vga_print("  Bagian ini untuk pengaturan akses bersama antar-thread.\n", 0x07);
+        vga_print("  Mutex digunakan untuk melindungi data saat diakses bersamaan.\n", 0x07);
+        vga_print("  mutex_test               - Demo mutex (belum diimplementasikan)\n\n", 0x07);
+
+        vga_print("[5] DEADLOCK DAN PENANGANANNYA\n", 0x0B);
+        vga_print("  Bagian ini untuk mengatasi kondisi thread saling menunggu sumber daya.\n", 0x07);
+        vga_print("  Pembahasan mencakup penyebab dan cara menghindari deadlock.\n", 0x07);
+        vga_print("  deadlock                 - Demo kondisi deadlock (belum aktif)\n", 0x07);
+        vga_print("  deadlock_fix             - Demo penanganan deadlock (belum aktif)\n\n", 0x07);
+
+        vga_print("[6] PENGELOLAAN MEMORI DINAMIS\n", 0x0B);
+        vga_print("  Bagian ini mengelola alokasi dan pembebasan memori heap kernel.\n", 0x07);
+        vga_print("  meminfo                  - Melihat total, terpakai, dan sisa heap\n", 0x07);
+        vga_print("  test_mem                 - Menguji alokasi, free, dan kondisi OOM\n\n", 0x07);
+
+        vga_print("[7] SISTEM BERKAS VIRTUAL (RAMDISK)\n", 0x0B);
+        vga_print("  Bagian ini mengelola berkas di media penyimpanan berbasis RAM.\n", 0x07);
+        vga_print("  ls                       - Melihat daftar berkas yang tersimpan\n", 0x07);
+        vga_print("  create <nama> <isi>      - Membuat berkas baru beserta isinya\n", 0x07);
+        vga_print("  read <nama>              - Membaca dan menampilkan isi berkas\n", 0x07);
+        vga_print("  update <nama> <isi_baru> - Mengubah isi berkas yang tersimpan\n", 0x07);
+        vga_print("  delete <nama>            - Menghapus berkas dari RAMDisk\n\n", 0x07);
+
+        vga_print("[8] PROTEKSI DAN HAK AKSES\n", 0x0B);
+        vga_print("  Bagian ini mengelolah pembatasan akses terhadap sumber daya OS.\n", 0x07);
+        vga_print("  Hak akses menentukan operasi yang boleh dilakukan pengguna.\n", 0x07);
+        vga_print("  access_test              - Demo pemeriksaan hak akses (belum aktif)\n\n", 0x07);
+        vga_print("============================================================================\n", 0x0B);
+    } else if (str_eq(cmd, "schedtest")) {
+        vga_print("=== ROUND ROBIN SCHEDULER TEST ===\n", 0x0E);
+
+        vga_print("WorkerA Counter : ", 0x07);
+        vga_print_number(worker_a_counter);
+        vga_putchar('\n', 0x07);
+
+        vga_print("WorkerB Counter : ", 0x07);
+        vga_print_number(worker_b_counter);
+        vga_putchar('\n', 0x07);
+
+        if (worker_a_counter > 0 && worker_b_counter > 0) {
+            vga_print("Result          : BOTH WORKERS HAVE RUN\n", 0x0A);
+        } else {
+            vga_print("Result          : ONE OR BOTH WORKERS NOT RUN YET\n", 0x0E);
+        }
+
+        vga_print("Scheduler       : ROUND ROBIN (configured)\n", 0x07);
+    } else if (str_eq(cmd, "mutex_test")) {
+        vga_print("[SINKRONISASI] Fitur mutex belum diimplementasikan.\n", 0x0E);
+        vga_print("Perintah dikenali, tetapi pengujian belum dapat dijalankan.\n", 0x07);
+    } else if (str_eq(cmd, "deadlock")) {
+        vga_print("[DEADLOCK] Demonstrasi deadlock belum diimplementasikan.\n", 0x0E);
+        vga_print("Perintah dikenali, tetapi pengujian belum dapat dijalankan.\n", 0x07);
+    } else if (str_eq(cmd, "deadlock_fix")) {
+        vga_print("[DEADLOCK] Fitur penanganan deadlock belum diimplementasikan.\n", 0x0E);
+        vga_print("Perintah dikenali, tetapi pengujian belum dapat dijalankan.\n", 0x07);
+    } else if (str_eq(cmd, "access_test")) {
+        vga_print("[PROTEKSI] Pengujian hak akses belum diimplementasikan.\n", 0x0E);
+        vga_print("Perintah dikenali, tetapi pengujian belum dapat dijalankan.\n", 0x07);
     } else if (str_eq(cmd, "ps")) {
         vga_print("=== PROCESS & THREAD LIST ===\n", 0x0E);
         vga_print("Jumlah proses aktif: ", 0x07);
@@ -484,32 +549,27 @@ static void cli_execute(const char* cmd) {
     }
 }
 
-void kernel_main(void) {
+
+/* Thread Worker A */
+static void worker_a_task(void) {
+    while (1) {
+        worker_a_counter++;
+    }
+}
+
+/* Thread Worker B */
+static void worker_b_task(void) {
+    while (1) {
+        worker_b_counter++;
+    }
+}
+
+/* CLI tetap berjalan sebagai thread */
+static void shell_task(void) {
     char cmd_buffer[CMD_MAX_LEN];
     size_t cmd_len = 0;
 
-    __asm__ volatile ("cli");
-
-    vga_clear(0x07);
-
-    gdt_init();
-    idt_init();
-    timer_init();
-   
-    heap_init();
-    process_test();
-    keyboard_init();
-    vfs_init();
-    serial_init();
-
-    print_banner();
-
-    vga_print("[BOOT] GibranOS Kernel Initialized.\n", 0x0A);
-    vga_print("[VFS]  RAMDisk Initialized (words.txt, scores.txt loaded).\n", 0x0A);
-    vga_print("[MEM]  Kernel Heap Allocator Ready (64 KB, first-fit).\n", 0x0A);
-    vga_print(serial_is_ready() ? "[IO]   Serial UART COM1 Ready (38400 8N1).\n"
-                                : "[IO]   Serial UART COM1 tidak terdeteksi.\n", 0x0A);
-    vga_print("[IO]   PS/2 Keyboard Driver Ready. Ketik 'help' untuk mulai.\n\n", 0x0A);
+    vga_print("[IO] PS/2 Keyboard Driver Ready. Ketik 'help' untuk mulai.\n\n", 0x0A);
     vga_print("GibranOS-CLI $ ", 0x0F);
 
     while (1) {
@@ -540,6 +600,80 @@ void kernel_main(void) {
                 vga_putchar(c, 0x07);
             }
         }
+    }
+}
+
+
+void kernel_main(void) {
+    __asm__ volatile ("cli");
+
+    vga_clear(0x07);
+
+    gdt_init();
+    idt_init();
+    timer_init();
+
+    heap_init();
+
+    /* Inisialisasi scheduler dan proses */
+    scheduler_init();
+    // process_test();
+    process_init();
+
+    /* Membuat dua worker dan satu thread CLI */
+    pcb_t* worker_a = process_create(
+        "WorkerA", worker_a_task, 1, PRIVILEGE_KERNEL
+    );
+
+    pcb_t* worker_b = process_create(
+        "WorkerB", worker_b_task, 1, PRIVILEGE_KERNEL
+    );
+
+    pcb_t* shell = process_create(
+        "Shell", shell_task, 1, PRIVILEGE_KERNEL
+    );
+
+    keyboard_init();
+    vfs_init();
+    serial_init();
+
+    print_banner();
+
+    vga_print("[BOOT] GibranOS Kernel Initialized.\n", 0x0A);
+    vga_print("[VFS]  RAMDisk Initialized (words.txt, scores.txt loaded).\n", 0x0A);
+    vga_print("[MEM]  Kernel Heap Allocator Ready (64 KB, first-fit).\n", 0x0A);
+    vga_print("[PROC] Process Management Ready.\n", 0x0A);
+    vga_print("[SCHED] Round Robin Scheduler Ready (Quantum 5).\n", 0x0A);
+
+    vga_print(
+        worker_a != NULL && worker_b != NULL && shell != NULL
+        ? "[THREAD] WorkerA, WorkerB, Shell berhasil dibuat.\n"
+        : "[ERROR] Gagal membuat salah satu thread.\n",
+        worker_a != NULL && worker_b != NULL && shell != NULL
+        ? 0x0A : 0x0C
+    );
+
+    vga_print(
+        serial_is_ready()
+        ? "[IO] Serial UART COM1 Ready (38400 8N1).\n"
+        : "[IO] Serial UART COM1 tidak terdeteksi.\n",
+        0x0A
+    );
+
+    if (worker_a == NULL || worker_b == NULL || shell == NULL) {
+        vga_print("[ERROR] Scheduler tidak diaktifkan.\n", 0x0C);
+
+        while (1) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    /* Aktifkan interrupt setelah semua thread siap */
+    __asm__ volatile ("sti");
+
+    /* Kernel utama menjadi idle */
+    while (1) {
+        __asm__ volatile ("hlt");
     }
 }
 

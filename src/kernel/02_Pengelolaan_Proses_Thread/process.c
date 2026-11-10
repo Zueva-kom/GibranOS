@@ -1,5 +1,6 @@
 
 #include "process.h"
+#include "../03_Penjadwalan_CPU_Preemptive/scheduler.h"
 
 /* Tabel untuk menyimpan data proses dan thread */
 static pcb_t process_table[MAX_PROCESSES];
@@ -162,6 +163,7 @@ pcb_t* process_create(
 
     /* Memasukkan thread ke status READY */
     process_set_state(thread, PROCESS_READY);
+    scheduler_add_thread(thread);
 
     return proc;
 }
@@ -182,6 +184,11 @@ void process_set_state(tcb_t* thread, process_state_t new_state) {
 /* Mengambil thread yang sedang berjalan */
 tcb_t* process_get_current_thread(void) {
     return current_thread;
+}
+
+/* Mengatur thread yang sedang berjalan */
+void process_set_current_thread(tcb_t* thread) {
+    current_thread = thread;
 }
 
 /* Mengubah status proses menjadi teks */

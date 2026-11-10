@@ -116,6 +116,7 @@ void process_set_state(
 
 /* Mengambil thread yang sedang berjalan */
 tcb_t* process_get_current_thread(void);
+void process_set_current_thread(tcb_t* thread);
 
 /* Mengubah status proses menjadi teks */
 const char* process_state_to_str(process_state_t state);
