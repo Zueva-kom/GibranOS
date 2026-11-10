@@ -237,6 +237,25 @@ static const char* extract_token(const char* str, char* out_token, size_t max_le
     return str;
 }
 
+static void vga_print_number(size_t number) {
+    char buffer[20];
+    int i = 0;
+
+    if (number == 0) {
+        vga_putchar('0', 0x07);
+        return;
+    }
+
+    while (number > 0) {
+        buffer[i++] = (char)('0' + (number % 10));
+        number /= 10;
+    }
+
+    while (i > 0) {
+        vga_putchar(buffer[--i], 0x07);
+    }
+}
+
 static void cli_execute(const char* cmd) {
     // Lewati spasi di awal perintah
     while (*cmd == ' ') {
@@ -374,10 +393,51 @@ static void cli_execute(const char* cmd) {
             }
         }
     } else if (str_eq(cmd, "meminfo")) {
-        heap_print_info();
+        size_t total = HEAP_SIZE;
+        size_t free_mem = heap_get_free_bytes();
+        size_t used_mem = total - free_mem;
+
+        vga_print("=== INFORMASI HEAP GIBRANOS ===\n", 0x0E);
+
+        vga_print("Heap Total : ", 0x07);
+        vga_print_number(total);
+        vga_print(" bytes\n", 0x07);
+
+        vga_print("Heap Used  : ", 0x07);
+        vga_print_number(used_mem);
+        vga_print(" bytes\n", 0x07);
+
+        vga_print("Heap Free  : ", 0x07);
+        vga_print_number(free_mem);
+        vga_print(" bytes\n", 0x07);
     } else if (str_eq(cmd, "test_mem")) {
-        heap_test_alloc();
-        heap_test_oom();
+        vga_print("=== TEST MEMORY ===\n", 0x0E);
+
+        size_t free_before = heap_get_free_bytes();
+        void* memory = kmalloc(1024);
+
+        if (memory != NULL) {
+            vga_print("[BERHASIL] Alokasi 1024 bytes.\n", 0x0A);
+
+            kfree(memory);
+
+            if (heap_get_free_bytes() == free_before) {
+                vga_print("[BERHASIL] Pembebasan memori.\n", 0x0A);
+            } else {
+                vga_print("[GAGAL] Kondisi heap setelah free tidak sesuai.\n", 0x0C);
+            }
+        } else {
+            vga_print("[GAGAL] Alokasi memori.\n", 0x0C);
+        }
+
+        void* oom = kmalloc(HEAP_SIZE);
+
+        if (oom == NULL) {
+            vga_print("[BERHASIL] Penanganan Out of Memory (OOM).\n", 0x0A);
+        } else {
+            vga_print("[GAGAL] Alokasi OOM tidak ditolak.\n", 0x0C);
+            kfree(oom);
+        }
     } else if (str_eq(cmd, "shutdown") || str_eq(cmd, "poweroff")) {
         system_shutdown();
     } else {
@@ -392,11 +452,10 @@ void kernel_main(void) {
     size_t cmd_len = 0;
 
     vga_clear(0x07);
+    heap_init();
     keyboard_init();
     vfs_init();
     serial_init();
-    heap_init();
-    heap_install_oom_warning();
 
     print_banner();
     vga_print("[BOOT] GibranOS Kernel Initialized.\n", 0x0A);
