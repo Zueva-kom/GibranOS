@@ -285,7 +285,7 @@ static void cli_execute(const char* cmd) {
     } else if (str_eq(cmd, "clear")) {
         vga_clear(0x07);
     } else if (str_eq(cmd, "version")) {
-        vga_print("GibranOS v0.1.0 (x86 32-bit Multiboot Kernel)\n", 0x0A);
+        vga_print("GibranOS v0.1.2 (x86 32-bit Multiboot Kernel)\n", 0x0A);
     } else if (str_starts_with(cmd, "echo ")) {
         vga_print(cmd + 5, 0x07);
         vga_putchar('\n', 0x07);
