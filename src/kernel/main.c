@@ -300,7 +300,7 @@ static void cli_execute(const char* cmd) {
         }
     } else if (str_starts_with(cmd, "read ") || str_eq(cmd, "read")) {
         char filename[MAX_FILENAME];
-        char buffer[MAX_FILESIZE];
+        static char buffer[MAX_FILESIZE];
         extract_token(cmd + 4, filename, MAX_FILENAME);
 
         if (filename[0] == '\0') {
