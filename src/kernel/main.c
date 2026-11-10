@@ -5,6 +5,7 @@
 #include "kernel/memory/heap.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/game/game.h"
+#include "drivers/serial.h"
 
 #define VGA_WIDTH        80
 #define VGA_HEIGHT       25
@@ -246,7 +247,7 @@ static void vga_print_number(size_t number) {
     }
 
     while (number > 0) {
-        buffer[i++] = '0' + (number % 10);
+        buffer[i++] = (char)('0' + (number % 10));
         number /= 10;
     }
 
@@ -278,56 +279,9 @@ static void cli_execute(const char* cmd) {
         vga_print("  read <nama>              - Membaca isi berkas teks\n", 0x07);
         vga_print("  update <nama> <isi_baru> - Memperbarui isi berkas teks\n", 0x07);
         vga_print("  delete <nama>            - Menghapus berkas teks\n", 0x07);
-        vga_print("[Memory Management]\n", 0x0B);
-        vga_print("  meminfo                  - Informasi kapasitas Heap\n", 0x07);
-        vga_print("  test_mem                 - Menguji alokasi dan OOM\n", 0x07);
-            } else if (str_eq(cmd, "meminfo")) {
-        size_t total = HEAP_SIZE;
-        size_t free_mem = heap_get_free_bytes();
-        size_t used_mem = total - free_mem;
-
-        vga_print("=== INFORMASI HEAP GIBRAN OS ===\n", 0x0E);
-
-        vga_print("Heap Total : ", 0x07);
-        vga_print_number(total);
-        vga_print(" bytes\n", 0x07);
-
-        vga_print("Heap Used  : ", 0x07);
-        vga_print_number(used_mem);
-        vga_print(" bytes\n", 0x07);
-
-        vga_print("Heap Free  : ", 0x07);
-        vga_print_number(free_mem);
-        vga_print(" bytes\n", 0x07);
-
-    } else if (str_eq(cmd, "test_mem")) {
-        vga_print("=== TEST MEMORY ===\n", 0x0E);
-
-        size_t free_before = heap_get_free_bytes();
-        void* memory = kmalloc(1024);
-
-        if (memory != NULL) {
-            vga_print("[BERHASIL] Alokasi 1024 bytes.\n", 0x0A);
-
-            kfree(memory);
-
-            if (heap_get_free_bytes() == free_before) {
-                vga_print("[BERHASIL] Pembebasan memori.\n", 0x0A);
-            } else {
-                vga_print("[GAGAL] Kondisi heap setelah free tidak sesuai.\n", 0x0C);
-            }
-        } else {
-            vga_print("[GAGAL] Alokasi memori.\n", 0x0C);
-        }
-
-        void* oom = kmalloc(HEAP_SIZE);
-
-        if (oom == NULL) {
-            vga_print("[BERHASIL] Penanganan Out of Memory (OOM).\n", 0x0A);
-        } else {
-            vga_print("[GAGAL] Alokasi OOM tidak ditolak.\n", 0x0C);
-            kfree(oom);
-        }
+        vga_print("[Memori, Proses, Sinkronisasi & Keamanan]\n", 0x0B);
+        vga_print("  meminfo                  - Menampilkan kapasitas heap (terpakai & bebas)\n", 0x07);
+        vga_print("  test_mem                 - Demo alokasi, free, & penanganan Out of Memory\n", 0x07);
     } else if (str_eq(cmd, "clear")) {
         vga_clear(0x07);
     } else if (str_eq(cmd, "version")) {
@@ -365,7 +319,7 @@ static void cli_execute(const char* cmd) {
         }
     } else if (str_starts_with(cmd, "read ") || str_eq(cmd, "read")) {
         char filename[MAX_FILENAME];
-        char buffer[MAX_FILESIZE];
+        static char buffer[MAX_FILESIZE];
         extract_token(cmd + 4, filename, MAX_FILENAME);
 
         if (filename[0] == '\0') {
@@ -438,6 +392,52 @@ static void cli_execute(const char* cmd) {
                 vga_print("[VFS] Gagal menghapus berkas.\n", 0x0C);
             }
         }
+    } else if (str_eq(cmd, "meminfo")) {
+        size_t total = HEAP_SIZE;
+        size_t free_mem = heap_get_free_bytes();
+        size_t used_mem = total - free_mem;
+
+        vga_print("=== INFORMASI HEAP GIBRANOS ===\n", 0x0E);
+
+        vga_print("Heap Total : ", 0x07);
+        vga_print_number(total);
+        vga_print(" bytes\n", 0x07);
+
+        vga_print("Heap Used  : ", 0x07);
+        vga_print_number(used_mem);
+        vga_print(" bytes\n", 0x07);
+
+        vga_print("Heap Free  : ", 0x07);
+        vga_print_number(free_mem);
+        vga_print(" bytes\n", 0x07);
+    } else if (str_eq(cmd, "test_mem")) {
+        vga_print("=== TEST MEMORY ===\n", 0x0E);
+
+        size_t free_before = heap_get_free_bytes();
+        void* memory = kmalloc(1024);
+
+        if (memory != NULL) {
+            vga_print("[BERHASIL] Alokasi 1024 bytes.\n", 0x0A);
+
+            kfree(memory);
+
+            if (heap_get_free_bytes() == free_before) {
+                vga_print("[BERHASIL] Pembebasan memori.\n", 0x0A);
+            } else {
+                vga_print("[GAGAL] Kondisi heap setelah free tidak sesuai.\n", 0x0C);
+            }
+        } else {
+            vga_print("[GAGAL] Alokasi memori.\n", 0x0C);
+        }
+
+        void* oom = kmalloc(HEAP_SIZE);
+
+        if (oom == NULL) {
+            vga_print("[BERHASIL] Penanganan Out of Memory (OOM).\n", 0x0A);
+        } else {
+            vga_print("[GAGAL] Alokasi OOM tidak ditolak.\n", 0x0C);
+            kfree(oom);
+        }
     } else if (str_eq(cmd, "shutdown") || str_eq(cmd, "poweroff")) {
         system_shutdown();
     } else {
@@ -453,12 +453,17 @@ void kernel_main(void) {
 
     vga_clear(0x07);
     heap_init();
+    process_init();
     keyboard_init();
     vfs_init();
+    serial_init();
 
     print_banner();
     vga_print("[BOOT] GibranOS Kernel Initialized.\n", 0x0A);
     vga_print("[VFS]  RAMDisk Initialized (words.txt, scores.txt loaded).\n", 0x0A);
+    vga_print("[MEM]  Kernel Heap Allocator Ready (64 KB, first-fit).\n", 0x0A);
+    vga_print(serial_is_ready() ? "[IO]   Serial UART COM1 Ready (38400 8N1).\n"
+                                : "[IO]   Serial UART COM1 tidak terdeteksi.\n", 0x0A);
     vga_print("[IO]   PS/2 Keyboard Driver Ready. Ketik 'help' untuk mulai.\n\n", 0x0A);
     vga_print("GibranOS-CLI $ ", 0x0F);
 

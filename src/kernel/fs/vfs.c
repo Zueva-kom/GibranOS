@@ -116,15 +116,55 @@ void vfs_init(void) {
         ramdisk[i].is_protected = 0;
     }
 
-    /* Berkas sistem bawaan untuk Game Key-Typing (diproteksi) */
+    /* Berkas sistem bawaan untuk Game Key-Typing (diproteksi, kata dari dataset random-10000-words) */
     vfs_create(
         "words.txt",
-        "kernel proses thread memori mutex deadlock ramdisk scheduler interrupt proteksi gibranos sistem",
+        /* Mudah (4-5 huruf) */
+        "able acid actor adapt admin alarm album alert alien alpha "
+        "aqua arena audio basic batch beat blade blank block logic "
+        "brain brief cable cache chain chart chief claim clean cloud "
+        "coach coral craft crash cream crown curve cycle daily dance "
+        "debug delay depth draft dream drive earth elite entry equal "
+        "error event exact extra faith fault fiber field final flame "
+        "flash fleet focus frame fresh front giant glass globe grace "
+        "grade grand grant green guard guide happy heart heavy horse "
+        "hotel human ideal image index inner input issue joint judge "
+        "laser layer level light limit local magic major maker match "
+        "media metal micro model moral motor mount mouse music mutex "
+        "night noble noise north novel nurse ocean offer order organ "
+        "other outer panel paper party patch peace phase phone photo "
+        "pilot pitch pixel place plain plane plant plate point power "
+        "press price pride prime print prior prize proof proud pulse "
+        "queen quick quiet radio range rapid ratio reach "
+        /* Sedang (6-8 huruf) */
+        "academy achieve acoustic adapter address advance already ancient "
+        "anxiety awesome balance battery blocking builder cabinet caliber "
+        "capture carrier catalog central century chamber channel chapter "
+        "charity classic climate cluster collect college combine command "
+        "compact compare complex concept confirm connect console control "
+        "convert courage counter crystal culture current damage dataset "
+        "default defense deliver density desktop develop digital display "
+        "dynamic element emerald feature fighter finding forecast fortune "
+        "freedom gallery gateway general gibranos gravity handler harmony "
+        "history hosting impulse journey justice kernel kingdom landing "
+        "library machine manager memory monster network package pattern "
+        "pointer process program project protect quantum ramdisk request "
+        "runtime scanner section service session signal storage system "
+        "teacher thread "
+        /* Sulit (9+ huruf) */
+        "abandoned adjustable alternative appreciated attending "
+        "beautifully calculation charitable collections complaints "
+        "confirmed containers copyright definition discussion "
+        "efficient exclusion functional guarantee hydraulic "
+        "independent inspiration introducing migration navigator "
+        "occurrence paragraphs perspective procedures protection "
+        "regulation reservation scheduler subscriber syndicate "
+        "thoroughly treasurer wilderness interrupt",
         1
     );
     vfs_create(
         "scores.txt",
-        "0",
+        "0 - Belum Ada (MUDAH)",
         1
     );
 }

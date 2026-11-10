@@ -6,7 +6,7 @@
 
 #define MAX_FILES    16
 #define MAX_FILENAME 32
-#define MAX_FILESIZE 512
+#define MAX_FILESIZE 2048
 
 /* Kode status kembalian operasi VFS */
 #define VFS_OK             0
