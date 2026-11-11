@@ -6,8 +6,11 @@
 #include "kernel/process/process.h"
 #include "kernel/fs/vfs.h"
 #include "kernel/game/game.h"
-#include "kernel/memory/heap.h"
 #include "drivers/serial.h"
+#include "arch/i386/gdt.h"
+#include "arch/i386/idt.h"
+#include "arch/i386/timer.h"
+#include "03_Penjadwalan_CPU_Preemptive/scheduler.h"
 
 #define VGA_WIDTH        80
 #define VGA_HEIGHT       25
@@ -19,6 +22,10 @@ static volatile uint16_t history_buffer[SCROLLBACK_LINES][VGA_WIDTH];
 int cursor_row = 0;
 int cursor_col = 0;
 static int scroll_offset = 0;
+
+/* Counter aktivitas WorkerA dan WorkerB untuk perintah schedtest */
+static volatile uint32_t worker_a_counter = 0;
+static volatile uint32_t worker_b_counter = 0;
 
 static inline void outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -474,7 +481,23 @@ static void cli_execute(const char* cmd) {
     }
 }
 
-void kernel_main(void) {
+
+/* Thread Worker A */
+static void worker_a_task(void) {
+    while (1) {
+        worker_a_counter++;
+    }
+}
+
+/* Thread Worker B */
+static void worker_b_task(void) {
+    while (1) {
+        worker_b_counter++;
+    }
+}
+
+/* CLI tetap berjalan sebagai thread */
+static void shell_task(void) {
     char cmd_buffer[CMD_MAX_LEN];
     size_t cmd_len = 0;
 
@@ -541,3 +564,78 @@ void kernel_main(void) {
         }
     }
 }
+
+
+void kernel_main(void) {
+    __asm__ volatile ("cli");
+
+    vga_clear(0x07);
+
+    gdt_init();
+    idt_init();
+    timer_init();
+
+    heap_init();
+
+    /* Inisialisasi scheduler dan proses */
+    scheduler_init();
+    // process_test();
+    process_init();
+
+    /* Membuat dua worker dan satu thread CLI */
+    pcb_t* worker_a = process_create(
+        "WorkerA", worker_a_task, 1, PRIVILEGE_KERNEL
+    );
+
+    pcb_t* worker_b = process_create(
+        "WorkerB", worker_b_task, 1, PRIVILEGE_KERNEL
+    );
+
+    pcb_t* shell = process_create(
+        "Shell", shell_task, 1, PRIVILEGE_KERNEL
+    );
+
+    keyboard_init();
+    vfs_init();
+    serial_init();
+
+    print_banner();
+
+    vga_print("[BOOT] GibranOS Kernel Initialized.\n", 0x0A);
+    vga_print("[VFS]  RAMDisk Initialized (words.txt, scores.txt loaded).\n", 0x0A);
+    vga_print("[MEM]  Kernel Heap Allocator Ready (64 KB, first-fit).\n", 0x0A);
+    vga_print("[PROC] Process Management Ready.\n", 0x0A);
+    vga_print("[SCHED] Round Robin Scheduler Ready (Quantum 5).\n", 0x0A);
+
+    vga_print(
+        worker_a != NULL && worker_b != NULL && shell != NULL
+        ? "[THREAD] WorkerA, WorkerB, Shell berhasil dibuat.\n"
+        : "[ERROR] Gagal membuat salah satu thread.\n",
+        worker_a != NULL && worker_b != NULL && shell != NULL
+        ? 0x0A : 0x0C
+    );
+
+    vga_print(
+        serial_is_ready()
+        ? "[IO] Serial UART COM1 Ready (38400 8N1).\n"
+        : "[IO] Serial UART COM1 tidak terdeteksi.\n",
+        0x0A
+    );
+
+    if (worker_a == NULL || worker_b == NULL || shell == NULL) {
+        vga_print("[ERROR] Scheduler tidak diaktifkan.\n", 0x0C);
+
+        while (1) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    /* Aktifkan interrupt setelah semua thread siap */
+    __asm__ volatile ("sti");
+
+    /* Kernel utama menjadi idle */
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
+

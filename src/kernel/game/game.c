@@ -1,6 +1,6 @@
 #include "kernel/game/game.h"
 #include "drivers/keyboard.h"
-#include "kernel/fs/vfs.h"
+#include "kernel/07_Virtual_File_System/vfs.h"
 
 #define ARENA_WIDTH   80
 #define ARENA_HEIGHT  25

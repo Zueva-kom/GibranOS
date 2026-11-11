@@ -1,5 +1,6 @@
 
 #include "process.h"
+#include "../03_Penjadwalan_CPU_Preemptive/scheduler.h"
 
 /* Tabel untuk menyimpan data proses dan thread */
 static pcb_t process_table[MAX_PROCESSES];
@@ -162,6 +163,7 @@ pcb_t* process_create(
 
     /* Memasukkan thread ke status READY */
     process_set_state(thread, PROCESS_READY);
+    scheduler_add_thread(thread);
 
     return proc;
 }
@@ -182,6 +184,11 @@ void process_set_state(tcb_t* thread, process_state_t new_state) {
 /* Mengambil thread yang sedang berjalan */
 tcb_t* process_get_current_thread(void) {
     return current_thread;
+}
+
+/* Mengatur thread yang sedang berjalan */
+void process_set_current_thread(tcb_t* thread) {
+    current_thread = thread;
 }
 
 /* Mengubah status proses menjadi teks */
@@ -205,4 +212,54 @@ const char* process_state_to_str(process_state_t state) {
         default:
             return "UNKNOWN";
     }
+}
+
+/* Fungsi untuk pengujian proses */
+static void test_task(void) {
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
+
+/* Pengujian Process Management */
+void process_test(void) {
+    process_init();
+
+    pcb_t* test_process = process_create(
+        "TestProcess",
+        test_task,
+        1,
+        PRIVILEGE_KERNEL
+    );
+
+    if (test_process == NULL) {
+        return;
+    }
+}
+
+
+/* Mengambil proses berdasarkan indeks */
+pcb_t* process_get_by_index(uint32_t index) {
+    if (index >= MAX_PROCESSES) {
+        return NULL;
+    }
+
+    if (!process_table[index].used) {
+        return NULL;
+    }
+
+    return &process_table[index];
+}
+
+/* Menghitung jumlah proses yang aktif */
+uint32_t process_get_count(void) {
+    uint32_t count = 0;
+
+    for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
+        if (process_table[i].used) {
+            count++;
+        }
+    }
+
+    return count;
 }
