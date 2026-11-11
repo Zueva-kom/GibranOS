@@ -42,6 +42,7 @@ static const char scancode_shift[128] = {
 void keyboard_init(void) {
     shift_pressed = 0;
     caps_lock = 0;
+
     // Kosongkan sisa data di buffer controller PS/2 jika ada
     while (inb(KB_STATUS_PORT) & 0x01) {
         (void)inb(KB_DATA_PORT);
@@ -49,8 +50,12 @@ void keyboard_init(void) {
 }
 
 char keyboard_poll_char(void) {
-    // Cek bit 0 pada port status (0x64): 1 berarti output buffer penuh (ada data)
-    if (!(inb(KB_STATUS_PORT) & 0x01)) {
+    // Cek status controller PS/2
+    uint8_t status = inb(KB_STATUS_PORT);
+
+    // Bit 0 = output buffer penuh
+    // Bit 5 = data berasal dari mouse
+    if (!(status & 0x01) || (status & 0x20)) {
         return 0;
     }
 
@@ -64,23 +69,24 @@ char keyboard_poll_char(void) {
     // Jika bit ke-7 bernilai 1 (0x80), berarti tombol dilepas (Key Release)
     if (scancode & 0x80) {
         uint8_t released = scancode & 0x7F;
-        if (released == 0x2A || released == 0x36) { // Left / Right Shift dilepas
+        if (released == 0x2A || released == 0x36) {
             shift_pressed = 0;
         }
         return 0;
     }
 
     // Tangani tombol modifier saat ditekan (Key Press)
-    if (scancode == 0x2A || scancode == 0x36) { // Left / Right Shift ditekan
+    if (scancode == 0x2A || scancode == 0x36) {
         shift_pressed = 1;
         return 0;
     }
-    if (scancode == 0x3A) { // Caps Lock ditekan
+
+    if (scancode == 0x3A) {
         caps_lock = !caps_lock;
         return 0;
     }
 
-    // Tombol navigasi untuk scroll layar (Arrow Up/Down & Page Up/Down)
+    // Tombol navigasi untuk scroll layar
     if (scancode == 0x48) return KEY_UP;
     if (scancode == 0x50) return KEY_DOWN;
     if (scancode == 0x49) return KEY_PGUP;
@@ -92,7 +98,7 @@ char keyboard_poll_char(void) {
 
     char c = shift_pressed ? scancode_shift[scancode] : scancode_normal[scancode];
 
-    // Terapkan efek Caps Lock khusus pada huruf alfabet (a-z / A-Z)
+    // Terapkan efek Caps Lock khusus pada huruf alfabet
     if (caps_lock) {
         if (c >= 'a' && c <= 'z') {
             c = c - 'a' + 'A';
@@ -106,8 +112,10 @@ char keyboard_poll_char(void) {
 
 char keyboard_getchar(void) {
     char c = 0;
+
     while ((c = keyboard_poll_char()) == 0) {
         __asm__ volatile ("pause");
     }
+
     return c;
 }
