@@ -1,6 +1,3 @@
-
-.RECIPEPREFIX := >
-
 ASM = nasm
 CC  = clang
 LD  = ld.lld
@@ -15,11 +12,14 @@ all: build/kernel.bin
 build/boot.o: src/boot/boot.s
 >$(ASM) -f elf32 src/boot/boot.s -o build/boot.o
 
-build/main.o: src/kernel/main.c src/drivers/keyboard.h src/drivers/serial.h src/kernel/02_Pengelolaan_Proses_Thread/process.h src/kernel/06_Alokator_Memori_Dinamis/heap.h src/kernel/07_Virtual_File_System/vfs.h src/kernel/game/game.h src/arch/i386/gdt.h src/arch/i386/idt.h src/arch/i386/timer.h
->$(CC) $(CFLAGS) -c src/kernel/main.c -o build/main.o
+build/main.o: src/kernel/main.c src/drivers/keyboard.h src/drivers/mouse.h src/drivers/serial.h src/kernel/process/process.h src/kernel/memory/heap.h src/kernel/fs/vfs.h src/kernel/game/game.h
+	$(CC) $(CFLAGS) -c src/kernel/main.c -o build/main.o
 
 build/keyboard.o: src/drivers/keyboard.c src/drivers/keyboard.h
 >$(CC) $(CFLAGS) -c src/drivers/keyboard.c -o build/keyboard.o
+
+build/mouse.o: src/drivers/mouse.c src/drivers/mouse.h
+	$(CC) $(CFLAGS) -c src/drivers/mouse.c -o build/mouse.o
 
 build/serial.o: src/drivers/serial.c src/drivers/serial.h src/drivers/io.h
 >$(CC) $(CFLAGS) -c src/drivers/serial.c -o build/serial.o
@@ -57,8 +57,8 @@ build/vfs.o: src/kernel/07_Virtual_File_System/vfs.c src/kernel/07_Virtual_File_
 build/game.o: src/kernel/game/game.c src/kernel/game/game.h src/kernel/07_Virtual_File_System/vfs.h src/drivers/keyboard.h
 >$(CC) $(CFLAGS) -c src/kernel/game/game.c -o build/game.o
 
-build/kernel.bin: build/boot.o build/main.o build/keyboard.o build/serial.o build/process.o build/scheduler.o build/heap.o build/mutex.o build/gdt.o build/gdt_flush.o build/idt.o build/timer.o build/timer_irq.o build/vfs.o build/game.o
->$(LD) $(LDFLAGS) build/boot.o build/main.o build/keyboard.o build/serial.o build/process.o build/scheduler.o build/heap.o build/mutex.o build/gdt.o build/gdt_flush.o build/idt.o build/timer.o build/timer_irq.o build/vfs.o build/game.o -o build/kernel.bin
+build/kernel.bin: build/boot.o build/main.o build/keyboard.o build/mouse.o build/serial.o build/process.o build/heap.o build/gdt.o build/gdt_flush.o build/vfs.o build/game.o
+	$(LD) $(LDFLAGS) build/boot.o build/main.o build/keyboard.o build/mouse.o build/serial.o build/process.o build/heap.o build/gdt.o build/gdt_flush.o build/vfs.o build/game.o -o build/kernel.bin
 
 run: build/kernel.bin
 >qemu-system-i386 -kernel build/kernel.bin

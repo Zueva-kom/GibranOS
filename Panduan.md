@@ -95,28 +95,61 @@ Semua anggota memiliki posisi sejajar dan bertanggung jawab atas integrasi kompo
 ## 3. Struktur Repositori Git
 
 ```
-mini-os/
-├── .github/                  # Konfigurasi CI/CD (Opsional)
-├── docs/                     # Dokumentasi dan Laporan Projek
-│   ├── architecture_diagram.png
-│   ├── ai_usage_log.md       # Catatan penggunaan Generative AI (Wajib)
-│   └── laporan_tb_minios.docx
-├── src/                      # Source Code Kernel
-│   ├── boot/                 # Code assembly bootstrapping / entry point
-│   ├── arch/                 # Kode spesifik arsitektur (x86 / ARM / RISC-V)
-│   ├── kernel/
-│   │   ├── main.c            # Kernel entry point & inisialisasi awal
-│   │   ├── process/          # Task Control Block (TCB) & Preemptive Scheduler
-│   │   ├── memory/           # Dynamic Heap Allocator & Memory Manager
-│   │   ├── sync/             # Mutex, Semaphore, & Deadlock Handler
-│   │   ├── fs/               # VFS (Virtual File System) & RAMDisk
-│   │   └── security/         # Hak Akses & User/Kernel Mode Protection
-│   ├── drivers/              # Keyboard Driver, Serial UART, & Text Display
-│   └── shell/                # Antarmuka CLI & Perintah Internal
-├── tests/                    # Program pengujian (Race condition, Deadlock, OOM)
-├── Makefile                  # Build system & command runner QEMU
-├── README.md                 # Petunjuk compile & cara menjalankan di QEMU
-└── .gitignore
+GIBRAN OS/
+├── src/
+│   ├── arch/
+│   │   └── i386/
+│   │       ├── gdt.c
+│   │       ├── gdt.h
+│   │       ├── gdt_flush.s
+│   │       ├── idt.c
+│   │       ├── idt.h
+│   │       ├── timer.c
+│   │       ├── timer.h
+│   │       └── timer_irq.s
+│   │
+│   ├── boot/
+│   │   ├── boot.s
+│   │   └── linker.ld
+│   │
+│   ├── drivers/
+│   │   ├── io.h
+│   │   ├── keyboard.c
+│   │   ├── keyboard.h
+│   │   ├── serial.c
+│   │   └── serial.h
+│   │
+│   ├── shell/
+│   │   ├── shell.c
+│   │   └── shell.h
+│   │
+│   └── kernel/
+│       ├── main.c
+│       ├── 01_Bootstrapping_CLI/
+│       ├── 02_Pengelolaan_Proses_Thread/
+│       │   ├── process.c
+│       │   └── process.h
+│       ├── 03_Penjadwalan_CPU_Preemptive/
+│       │   ├── scheduler.h
+│       │   └── scheduler.c       (belum ada)
+│       ├── 04_Sinkronisasi/
+│       │   ├── mutex.c
+│       │   └── mutex.h
+│       ├── 05_Deadlock/
+│       │   ├── deadlock.c        (belum ada)
+│       │   └── deadlock.h        (belum ada)
+│       ├── 06_Alokator_Memori_Dinamis/
+│       │   ├── heap.c
+│       │   └── heap.h
+│       ├── 07_Virtual_File_System/
+│       │   ├── vfs.c
+│       │   └── vfs.h
+│       ├── 08_Proteksi_Hak_Akses/
+│       │   ├── security.c        (belum ada)
+│       │   └── security.h        (belum ada)
+│       └── game/
+│           ├── game.c
+│           └── game.h
 
 ```
 
