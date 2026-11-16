@@ -291,7 +291,7 @@ static void cli_execute(const char* cmd) {
         vga_print("  clear                    - Membersihkan tampilan terminal\n", 0x07);
         vga_print("  version                  - Melihat versi dan informasi kernel\n", 0x07);
         vga_print("  echo <teks>              - Menampilkan teks yang dimasukkan\n", 0x07);
-        vga_print("  game                     - Menjalankan permainan Monster Key-Typing\n", 0x07);
+        vga_print("  game                     - Menjalankan game (Multi-Window + Live Heap Monitor)\n", 0x07);
         vga_print("  shutdown                 - Mematikan GIBRAN OS dengan aman\n\n", 0x07);
 
         vga_print("[2-3] PENGELOLAAN PROSES, THREAD, DAN PENJADWALAN CPU\n", 0x0B);

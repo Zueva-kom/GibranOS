@@ -66,3 +66,7 @@ size_t heap_get_free_bytes(void) {
     }
     return total;
 }
+
+heap_block_t* heap_get_head(void) {
+    return free_list;
+}
