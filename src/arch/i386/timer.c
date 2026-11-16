@@ -25,7 +25,7 @@ uint32_t pit_handler(uint32_t current_esp) {
     tcb_t* current = scheduler_get_current();
 
     if (current != NULL) {
-        if (current->state == PROCESS_RUNNING) {
+        if (current->state != PROCESS_TERMINATED) {
             current->esp = current_esp;
         }
     } else {

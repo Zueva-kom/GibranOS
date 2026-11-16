@@ -341,6 +341,10 @@ static void cli_execute(const char* cmd) {
         vga_print_number(worker_b_counter);
         vga_putchar('\n', 0x07);
 
+        vga_print("Context Switches: ", 0x07);
+        vga_print_number(scheduler_get_switch_count());
+        vga_putchar('\n', 0x07);
+
         if (worker_a_counter > 0 && worker_b_counter > 0) {
             vga_print("Result          : BOTH WORKERS HAVE RUN\n", 0x0A);
         } else {
@@ -367,10 +371,12 @@ static void cli_execute(const char* cmd) {
 
     } else if (str_eq(cmd, "ps")) {
         vga_print("=== PROCESS & THREAD LIST ===\n", 0x0E);
-        vga_print("Jumlah proses aktif: ", 0x07);
+        vga_print("Jumlah proses terdaftar: ", 0x07);
         vga_print_number(process_get_count());
+        vga_print(" | Total Context Switch: ", 0x07);
+        vga_print_number(scheduler_get_switch_count());
         vga_putchar('\n', 0x07);
-        vga_print("PID  NAME                 STATE  TID  THREAD STATE\n", 0x0B);
+        vga_print("PID  NAME          STATE        TID  THREAD STATE  CPU TICKS\n", 0x0B);
 
         for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
             pcb_t* proc = process_get_by_index(i);
@@ -381,7 +387,7 @@ static void cli_execute(const char* cmd) {
             vga_print_number(proc->pid);
             vga_print("    ", 0x07);
             vga_print(proc->name, 0x07);
-            vga_print("    ", 0x07);
+            vga_print("      ", 0x07);
             vga_print(process_state_to_str(proc->state), 0x07);
             vga_print("    ", 0x07);
 
@@ -389,6 +395,8 @@ static void cli_execute(const char* cmd) {
                 vga_print_number(proc->main_thread->tid);
                 vga_print("    ", 0x07);
                 vga_print(process_state_to_str(proc->main_thread->state), 0x07);
+                vga_print("      ", 0x07);
+                vga_print_number(proc->main_thread->total_ticks);
             } else {
                 vga_print("-", 0x07);
             }

@@ -76,6 +76,9 @@ typedef struct tcb {
     /* Pengaturan penjadwalan */
     uint32_t priority;
     uint32_t time_slice;
+    uint32_t total_ticks;
+    uint32_t switches;
+    void*    waiting_on;
 
     /* Hubungan thread dengan proses */
     struct pcb* parent_process;
@@ -130,5 +133,8 @@ pcb_t* process_get_by_index(uint32_t index);
 
 /* Mengambil jumlah proses yang aktif */
 uint32_t process_get_count(void);
+
+/* Menghentikan proses dan mengubah statusnya menjadi TERMINATED */
+void process_terminate(pcb_t* proc);
 
 #endif
