@@ -16,5 +16,6 @@ void  heap_init(void);
 void* kmalloc(size_t size);
 void  kfree(void* ptr);
 size_t heap_get_free_bytes(void);
+heap_block_t* heap_get_head(void);
 
 #endif
