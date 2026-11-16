@@ -1,16 +1,16 @@
-
 #include <stdint.h>
 #include <stddef.h>
 #include "drivers/keyboard.h"
 #include "drivers/mouse.h"
-#include "kernel/process/process.h"
-#include "kernel/fs/vfs.h"
+#include "kernel/02_Pengelolaan_Proses_Thread/process.h"
+#include "kernel/06_Alokator_Memori_Dinamis/heap.h"
+#include "kernel/07_Virtual_File_System/vfs.h"
 #include "kernel/game/game.h"
 #include "drivers/serial.h"
 #include "arch/i386/gdt.h"
 #include "arch/i386/idt.h"
 #include "arch/i386/timer.h"
-#include "03_Penjadwalan_CPU_Preemptive/scheduler.h"
+#include "kernel/03_Penjadwalan_CPU_Preemptive/scheduler.h"
 
 #define VGA_WIDTH        80
 #define VGA_HEIGHT       25
