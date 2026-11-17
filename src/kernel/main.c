@@ -13,6 +13,7 @@
 #include "arch/i386/timer.h"
 #include "kernel/03_Penjadwalan_CPU_Preemptive/scheduler.h"
 #include "kernel/04_Sinkronisasi/mutex.h"
+#include "kernel/05_Deadlock/deadlock.h"
 
 #define VGA_WIDTH        80
 #define VGA_HEIGHT       25
@@ -211,14 +212,14 @@ static int str_starts_with(const char* str, const char* prefix) {
 }
 
 void print_banner(void) {
-    vga_print("==================================================\n", 0x0B);
+    vga_print("=====================================================================================\n", 0x0B);
     vga_print("     /\\          ██████╗  ██████╗ ███████╗\n", 0x0B);
     vga_print("    /  \\        ██╔════╝ ██╔═══██╗██╔════╝\n", 0x0B);
     vga_print("   / /\\ \\       ██║  ███╗██║   ██║███████╗\n", 0x0B);
     vga_print("  / /  \\ \\      ██║   ██║██║   ██║╚════██║\n", 0x0B);
     vga_print(" /_/__  \\_\\     ╚██████╔╝╚██████╔╝███████║\n", 0x0B);
     vga_print("   \\_____/       ╚═════╝  ╚═════╝ ╚══════╝\n", 0x0B);
-    vga_print("==================================================\n", 0x0B);
+    vga_print("=====================================================================================\n", 0x0B);
 }
 
 void system_shutdown(void) {
@@ -279,7 +280,6 @@ static void vga_print_number(size_t number) {
  * [4] SINKRONISASI (MUTEX) & [5] DEADLOCK
  * ========================================================================= */
 static mutex_t game_score_mutex;
-static mutex_t game_vfs_mutex;
 static volatile uint32_t shared_game_score = 0;
 
 static void run_mutex_sync_demo(void) {
@@ -315,46 +315,6 @@ static void run_mutex_sync_demo(void) {
     vga_print("2. Dengan game_score_mutex      : ", 0x0A);
     vga_print_number(shared_game_score);
     vga_print(" / 2000 poin (Konsisten!)\n", 0x0A);
-}
-
-static void run_deadlock_demo(void) {
-    mutex_init(&game_score_mutex);
-    mutex_init(&game_vfs_mutex);
-
-    vga_print("=== [5] DEMONSTRASI DEADLOCK (CIRCULAR WAIT) ===\n", 0x0C);
-    mutex_lock(&game_score_mutex);
-    vga_print("[Thread GameInput] Mengunci game_score_mutex -> Menunggu game_vfs_mutex...\n", 0x0E);
-
-    mutex_lock(&game_vfs_mutex);
-    vga_print("[Thread AutoSave]  Mengunci game_vfs_mutex   -> Menunggu game_score_mutex...\n", 0x0E);
-
-    vga_print("[DEADLOCK!] Circular Wait terdeteksi! Kedua thread saling mengunci.\n", 0x0C);
-    vga_print("Jalankan perintah 'deadlock_fix' untuk melihat solusi Lock Ordering.\n", 0x07);
-
-    mutex_unlock(&game_vfs_mutex);
-    mutex_unlock(&game_score_mutex);
-}
-
-static void run_deadlock_fix_demo(void) {
-    mutex_init(&game_score_mutex);
-    mutex_init(&game_vfs_mutex);
-
-    vga_print("=== [5] SOLUSI DEADLOCK (LOCK ORDERING) ===\n", 0x0A);
-    vga_print("Aturan Urutan: Selalu kunci (1) game_score_mutex -> lalu (2) game_vfs_mutex.\n", 0x07);
-
-    mutex_lock(&game_score_mutex);
-    mutex_lock(&game_vfs_mutex);
-    vga_print("[Thread GameInput] Mengunci sesuai urutan (1 -> 2) -> Update skor selesai.\n", 0x0A);
-    mutex_unlock(&game_vfs_mutex);
-    mutex_unlock(&game_score_mutex);
-
-    mutex_lock(&game_score_mutex);
-    mutex_lock(&game_vfs_mutex);
-    vga_print("[Thread AutoSave]  Mengunci sesuai urutan (1 -> 2) -> Simpan scores.txt selesai.\n", 0x0A);
-    mutex_unlock(&game_vfs_mutex);
-    mutex_unlock(&game_score_mutex);
-
-    vga_print("[AMAN] Tidak terjadi Circular Wait. Eksekusi selesai tanpa Deadlock.\n", 0x0A);
 }
 
 static void cli_execute(const char* cmd) {
@@ -420,4 +380,446 @@ static void cli_execute(const char* cmd) {
         vga_print("=== ROUND ROBIN SCHEDULER TEST ===\n", 0x0E);
 
         vga_print("WorkerA Counter : ", 0x07);
-        vga_print_number(worker_a_counter
+        vga_print_number(worker_a_counter);
+        vga_putchar('\n', 0x07);
+
+        vga_print("WorkerB Counter : ", 0x07);
+        vga_print_number(worker_b_counter);
+        vga_putchar('\n', 0x07);
+
+        vga_print("Context Switches: ", 0x07);
+        vga_print_number(scheduler_get_switch_count());
+        vga_putchar('\n', 0x07);
+
+        if (worker_a_counter > 0 && worker_b_counter > 0) {
+            vga_print("Result          : BOTH WORKERS HAVE RUN\n", 0x0A);
+        } else {
+            vga_print("Result          : ONE OR BOTH WORKERS NOT RUN YET\n", 0x0E);
+        }
+
+        vga_print("Scheduler       : ROUND ROBIN (configured)\n", 0x07);
+
+    } else if (str_eq(cmd, "mutex_test")) {
+        if (!security_require_admin("mutex_test")) return;
+        run_mutex_sync_demo();
+
+    } else if (str_eq(cmd, "deadlock")) {
+        if (!security_require_admin("deadlock")) return;
+        deadlock_demo_run(0);
+
+    } else if (str_eq(cmd, "deadlock_fix")) {
+        if (!security_require_admin("deadlock_fix")) return;
+        deadlock_demo_run(1);
+
+    } else if (str_eq(cmd, "access_test")) {
+        vga_print("=== [8] STATUS PROTEKSI & HAK AKSES ===\n", 0x0E);
+        vga_print("Peran Aktif : ", 0x07);
+        vga_print(role == ROLE_ADMIN ? "ADMIN (Akses Penuh Menu 1-8 & Berkas Protected)\n"
+                                     : "USER (Game, Dasar, Read [PUBLIC], Full CRUD [USER])\n",
+                  role == ROLE_ADMIN ? 0x0A : 0x0E);
+        vga_print("Gunakan perintah 'logout' untuk berpindah antara akun 'user' dan 'admin'.\n", 0x07);
+
+    } else if (str_eq(cmd, "ps")) {
+        if (!security_require_admin("ps")) return;
+        vga_print("=== PROCESS & THREAD LIST ===\n", 0x0E);
+        vga_print("Jumlah proses terdaftar: ", 0x07);
+        vga_print_number(process_get_count());
+        vga_print(" | Total Context Switch: ", 0x07);
+        vga_print_number(scheduler_get_switch_count());
+        vga_putchar('\n', 0x07);
+        vga_print("PID  NAME          STATE        TID  THREAD STATE  CPU TICKS\n", 0x0B);
+
+        for (uint32_t i = 0; i < MAX_PROCESSES; i++) {
+            pcb_t* proc = process_get_by_index(i);
+            if (proc == NULL) {
+                continue;
+            }
+
+            vga_print_number(proc->pid);
+            vga_print("    ", 0x07);
+            /* Nama dibuat selebar 14 karakter */
+            {
+                int n = 0;
+                while (proc->name[n] != '\0') n++;
+                vga_print(proc->name, 0x07);
+                for (; n < 14; n++) vga_putchar(' ', 0x07);
+            }
+            /* Status dibuat selebar 13 karakter */
+            {
+                const char* st = process_state_to_str(proc->state);
+                int n = 0;
+                while (st[n] != '\0') n++;
+                vga_print(st, 0x07);
+                for (; n < 13; n++) vga_putchar(' ', 0x07);
+            }
+
+            if (proc->main_thread != NULL) {
+                vga_print_number(proc->main_thread->tid);
+                vga_print(proc->main_thread->tid < 10 ? "    " : "   ", 0x07);
+                /* Thread state dibuat selebar 14 karakter */
+                {
+                    const char* tst = process_state_to_str(proc->main_thread->state);
+                    int n = 0;
+                    while (tst[n] != '\0') n++;
+                    vga_print(tst, 0x07);
+                    for (; n < 14; n++) vga_putchar(' ', 0x07);
+                }
+                vga_print_number(proc->main_thread->total_ticks);
+            } else {
+                vga_print("-", 0x07);
+            }
+            vga_putchar('\n', 0x07);
+        }
+
+        if (process_get_count() == 0) {
+            vga_print("Belum ada proses yang dibuat.\n", 0x0E);
+        }
+
+    } else if (str_eq(cmd, "clear")) {
+        vga_clear(0x07);
+
+    } else if (str_eq(cmd, "version")) {
+        vga_print("GibranOS v0.1.2 (x86 32-bit Multiboot Kernel)\n", 0x0A);
+
+    } else if (str_starts_with(cmd, "echo ")) {
+        vga_print(cmd + 5, 0x07);
+        vga_putchar('\n', 0x07);
+
+    } else if (str_eq(cmd, "echo")) {
+        vga_putchar('\n', 0x07);
+
+    } else if (str_eq(cmd, "game") || str_eq(cmd, "game start")) {
+        game_start();
+
+    } else if (str_eq(cmd, "ls")) {
+        vfs_list_files();
+
+    } else if (str_starts_with(cmd, "create ") || str_eq(cmd, "create")) {
+        char filename[MAX_FILENAME];
+        const char* rest = extract_token(cmd + 6, filename, MAX_FILENAME);
+
+        if (filename[0] == '\0') {
+            vga_print("[VFS] Penggunaan: create <nama_berkas> [public|protected] <isi>\n", 0x0E);
+        } else {
+            uint8_t file_mode = (role == ROLE_ADMIN) ? VFS_PROT_PROTECTED : VFS_PROT_USER;
+            const char* content = rest;
+
+            if (role == ROLE_ADMIN) {
+                char mode_token[16];
+                const char* after_mode = extract_token(rest, mode_token, sizeof(mode_token));
+
+                if (str_eq(mode_token, "public") || str_eq(mode_token, "--public")) {
+                    file_mode = VFS_PROT_PUBLIC;
+                    content = after_mode;
+                } else if (str_eq(mode_token, "protected") || str_eq(mode_token, "--protected")) {
+                    file_mode = VFS_PROT_PROTECTED;
+                    content = after_mode;
+                }
+            } else {
+                if (str_starts_with(rest, "protected ") || str_starts_with(rest, "--protected ")) {
+                    vga_print("[VFS] Akses ditolak: Hanya Admin yang dapat membuat berkas [PROTECTED].\n", 0x0C);
+                    return;
+                }
+            }
+
+            int res = vfs_create(filename, content, file_mode);
+
+            if (res == VFS_OK) {
+                vga_print("[VFS] Berkas '", 0x0A);
+                vga_print(filename, 0x0A);
+                if (file_mode == VFS_PROT_PROTECTED) {
+                    vga_print("' berhasil dibuat [PROTECTED].\n", 0x0C);
+                } else if (file_mode == VFS_PROT_PUBLIC) {
+                    vga_print("' berhasil dibuat [PUBLIC].\n", 0x0E);
+                } else {
+                    vga_print("' berhasil dibuat [USER].\n", 0x0A);
+                }
+            } else if (res == VFS_ERR_EXISTS) {
+                vga_print("[VFS] Gagal: Berkas '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' sudah ada.\n", 0x0C);
+            } else if (res == VFS_ERR_FULL) {
+                vga_print("[VFS] Gagal: Kapasitas RAMDisk penuh.\n", 0x0C);
+            } else {
+                vga_print("[VFS] Gagal membuat berkas.\n", 0x0C);
+            }
+        }
+
+    } else if (str_starts_with(cmd, "read ") || str_eq(cmd, "read")) {
+        char filename[MAX_FILENAME];
+        static char buffer[MAX_FILESIZE];
+        extract_token(cmd + 4, filename, MAX_FILENAME);
+
+        if (filename[0] == '\0') {
+            vga_print("[VFS] Penggunaan: read <nama_berkas>\n", 0x0E);
+        } else {
+            security_set_cli_read_flag(1);
+            int res = vfs_read(filename, buffer);
+            security_set_cli_read_flag(0);
+
+            if (res == VFS_OK) {
+                vga_print("--- Isi Berkas: ", 0x0B);
+                vga_print(filename, 0x0F);
+                vga_print(" ---\n", 0x0B);
+                vga_print(buffer, 0x07);
+                vga_putchar('\n', 0x07);
+            } else if (res == VFS_ERR_NOT_FOUND) {
+                vga_print("[VFS] Gagal: Berkas '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' tidak ditemukan.\n", 0x0C);
+            } else if (res == VFS_ERR_PROTECTED) {
+                vga_print("[VFS] Akses ditolak: Berkas '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' terproteksi (hanya Admin).\n", 0x0C);
+            } else {
+                vga_print("[VFS] Gagal membaca berkas.\n", 0x0C);
+            }
+        }
+
+    } else if (str_starts_with(cmd, "update ") || str_eq(cmd, "update")) {
+        char filename[MAX_FILENAME];
+        const char* new_content = extract_token(cmd + 6, filename, MAX_FILENAME);
+
+        if (filename[0] == '\0' || new_content[0] == '\0') {
+            vga_print("[VFS] Penggunaan: update <nama_berkas> <isi_baru>\n", 0x0E);
+        } else {
+            int res = vfs_update(filename, new_content);
+
+            if (res == VFS_OK) {
+                vga_print("[VFS] Berkas '", 0x0A);
+                vga_print(filename, 0x0A);
+                vga_print("' berhasil diperbarui.\n", 0x0A);
+            } else if (res == VFS_ERR_NOT_FOUND) {
+                vga_print("[VFS] Gagal: Berkas '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' tidak ditemukan.\n", 0x0C);
+            } else if (res == VFS_ERR_PROTECTED) {
+                vga_print("[VFS] Akses ditolak: Berkas milik Admin tidak dapat diubah oleh User.\n", 0x0C);
+            } else {
+                vga_print("[VFS] Gagal memperbarui berkas.\n", 0x0C);
+            }
+        }
+
+    } else if (str_starts_with(cmd, "delete ") || str_eq(cmd, "delete")) {
+        char filename[MAX_FILENAME];
+        extract_token(cmd + 6, filename, MAX_FILENAME);
+
+        if (filename[0] == '\0') {
+            vga_print("[VFS] Penggunaan: delete <nama_berkas>\n", 0x0E);
+        } else {
+            int res = vfs_delete(filename);
+
+            if (res == VFS_OK) {
+                vga_print("[VFS] Berkas '", 0x0A);
+                vga_print(filename, 0x0A);
+                vga_print("' berhasil dihapus.\n", 0x0A);
+            } else if (res == VFS_ERR_NOT_FOUND) {
+                vga_print("[VFS] Gagal: Berkas '", 0x0C);
+                vga_print(filename, 0x0C);
+                vga_print("' tidak ditemukan.\n", 0x0C);
+            } else if (res == VFS_ERR_PROTECTED) {
+                vga_print("[VFS] Akses ditolak: Berkas milik Admin tidak dapat dihapus oleh User.\n", 0x0C);
+            } else {
+                vga_print("[VFS] Gagal menghapus berkas.\n", 0x0C);
+            }
+        }
+
+    } else if (str_eq(cmd, "meminfo")) {
+        if (!security_require_admin("meminfo")) return;
+        size_t total = HEAP_SIZE;
+        size_t free_mem = heap_get_free_bytes();
+        size_t used_mem = total - free_mem;
+
+        vga_print("=== INFORMASI HEAP GIBRANOS ===\n", 0x0E);
+
+        vga_print("Heap Total : ", 0x07);
+        vga_print_number(total);
+        vga_print(" bytes\n", 0x07);
+
+        vga_print("Heap Used  : ", 0x07);
+        vga_print_number(used_mem);
+        vga_print(" bytes\n", 0x07);
+
+        vga_print("Heap Free  : ", 0x07);
+        vga_print_number(free_mem);
+        vga_print(" bytes\n", 0x07);
+
+    } else if (str_eq(cmd, "test_mem")) {
+        if (!security_require_admin("test_mem")) return;
+        vga_print("=== TEST MEMORY ===\n", 0x0E);
+
+        size_t free_before = heap_get_free_bytes();
+        void* memory = kmalloc(1024);
+
+        if (memory != NULL) {
+            vga_print("[BERHASIL] Alokasi 1024 bytes.\n", 0x0A);
+
+            kfree(memory);
+
+            if (heap_get_free_bytes() == free_before) {
+                vga_print("[BERHASIL] Pembebasan memori.\n", 0x0A);
+            } else {
+                vga_print("[GAGAL] Kondisi heap setelah free tidak sesuai.\n", 0x0C);
+            }
+        } else {
+            vga_print("[GAGAL] Alokasi memori.\n", 0x0C);
+        }
+
+        void* oom = kmalloc(HEAP_SIZE);
+
+        if (oom == NULL) {
+            vga_print("[BERHASIL] Penanganan Out of Memory (OOM).\n", 0x0A);
+        } else {
+            vga_print("[GAGAL] Alokasi OOM tidak ditolak.\n", 0x0C);
+            kfree(oom);
+        }
+
+    } else if (str_eq(cmd, "shutdown") || str_eq(cmd, "poweroff")) {
+        system_shutdown();
+
+    } else {
+        vga_print("Perintah tidak dikenal: '", 0x0C);
+        vga_print(cmd, 0x0C);
+        vga_print("'. Ketik 'help' untuk bantuan.\n", 0x0C);
+    }
+}
+
+/* Thread Worker A */
+static void worker_a_task(void) {
+    while (1) {
+        worker_a_counter++;
+    }
+}
+
+/* Thread Worker B */
+static void worker_b_task(void) {
+    while (1) {
+        worker_b_counter++;
+    }
+}
+
+/* CLI tetap berjalan sebagai thread */
+static void shell_task(void) {
+    char cmd_buffer[CMD_MAX_LEN];
+    size_t cmd_len = 0;
+
+    security_show_login_screen();
+
+    vga_print(security_get_role() == ROLE_ADMIN ? "GibranOS-CLI [ADMIN] $ " : "GibranOS-CLI [USER] $ ",
+              security_get_role() == ROLE_ADMIN ? 0x0A : 0x0B);
+
+    while (1) {
+        int scroll = mouse_poll_scroll();
+
+        if (scroll != 0) {
+            vga_scroll_view(scroll * 3);
+        }
+
+        char c = keyboard_poll_char();
+
+        if (c == 0) {
+            __asm__ volatile ("pause");
+            continue;
+        }
+
+        if (c == KEY_UP) {
+            vga_scroll_view(1);
+        } else if (c == KEY_DOWN) {
+            vga_scroll_view(-1);
+        } else if (c == KEY_PGUP) {
+            vga_scroll_view(5);
+        } else if (c == KEY_PGDN) {
+            vga_scroll_view(-5);
+        } else if (c == '\n') {
+            vga_putchar('\n', 0x07);
+            cmd_buffer[cmd_len] = '\0';
+            cli_execute(cmd_buffer);
+            cmd_len = 0;
+            vga_print(security_get_role() == ROLE_ADMIN ? "GibranOS-CLI [ADMIN] $ " : "GibranOS-CLI [USER] $ ",
+                      security_get_role() == ROLE_ADMIN ? 0x0A : 0x0B);
+        } else if (c == '\b') {
+            if (cmd_len > 0) {
+                cmd_len--;
+                vga_putchar('\b', 0x07);
+            }
+        } else if (c >= ' ' && c <= '~') {
+            if (cmd_len < CMD_MAX_LEN - 1) {
+                cmd_buffer[cmd_len++] = c;
+                vga_putchar(c, 0x07);
+            }
+        }
+    }
+}
+
+void kernel_main(void) {
+    __asm__ volatile ("cli");
+
+    vga_clear(0x07);
+
+    gdt_init();
+    idt_init();
+    timer_init();
+
+    heap_init();
+
+    /* Inisialisasi scheduler dan proses */
+    scheduler_init();
+    process_init();
+
+    /* Membuat dua worker dan satu thread CLI */
+    pcb_t* worker_a = process_create(
+        "WorkerA", worker_a_task, 1, PRIVILEGE_KERNEL
+    );
+
+    pcb_t* worker_b = process_create(
+        "WorkerB", worker_b_task, 1, PRIVILEGE_KERNEL
+    );
+
+    pcb_t* shell = process_create(
+        "Shell", shell_task, 1, PRIVILEGE_KERNEL
+    );
+
+    keyboard_init();
+    mouse_init();
+    vfs_init();
+    serial_init();
+
+    print_banner();
+
+    vga_print("[BOOT] GibranOS Kernel Initialized.\n", 0x0A);
+    vga_print("[VFS]  RAMDisk Initialized (words.txt, scores.txt loaded).\n", 0x0A);
+    vga_print("[MEM]  Kernel Heap Allocator Ready (64 KB, first-fit).\n", 0x0A);
+    vga_print("[PROC] Process Management Ready.\n", 0x0A);
+    vga_print("[SCHED] Round Robin Scheduler Ready (Quantum 5).\n", 0x0A);
+
+    vga_print(
+        worker_a != NULL && worker_b != NULL && shell != NULL
+        ? "[THREAD] WorkerA, WorkerB, Shell berhasil dibuat.\n"
+        : "[ERROR] Gagal membuat salah satu thread.\n",
+        worker_a != NULL && worker_b != NULL && shell != NULL
+        ? 0x0A : 0x0C
+    );
+
+    vga_print(
+        serial_is_ready()
+        ? "[IO] Serial UART COM1 Ready (38400 8N1).\n"
+        : "[IO] Serial UART COM1 tidak terdeteksi.\n",
+        0x0A
+    );
+
+    if (worker_a == NULL || worker_b == NULL || shell == NULL) {
+        vga_print("[ERROR] Scheduler tidak diaktifkan.\n", 0x0C);
+
+        while (1) {
+            __asm__ volatile ("hlt");
+        }
+    }
+
+    /* Aktifkan interrupt setelah semua thread siap */
+    __asm__ volatile ("sti");
+
+    /* Kernel utama menjadi idle */
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
