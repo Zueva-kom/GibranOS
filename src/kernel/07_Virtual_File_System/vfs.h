@@ -16,20 +16,25 @@
 #define VFS_ERR_FULL      -4
 #define VFS_ERR_PROTECTED -5
 
+/* Level proteksi berkas */
+#define VFS_PROT_USER      0  /* Dibuat User: Full CRUD oleh semua User & Admin */
+#define VFS_PROT_PUBLIC    1  /* Dibuat Admin (public): User hanya bisa READ */
+#define VFS_PROT_PROTECTED 2  /* Dibuat Admin (protected): User ditolak total */
+
 typedef struct {
     char name[MAX_FILENAME];
     char data[MAX_FILESIZE];
     uint32_t size;
     uint8_t in_use;
-    uint8_t is_protected; // 1 = Hanya ROLE_ADMIN / Kernel yang boleh ubah & hapus
+    uint8_t is_protected; /* 0 = [USER], 1 = [PUBLIC] (Admin), 2 = [PROTECTED] (Admin) */
 } ramdisk_file_t;
 
-void vfs_init(void); // Inisialisasi RAMDisk + buat words.txt & scores.txt bawaan
+void vfs_init(void);
 int vfs_create(const char* name, const char* content, uint8_t is_protected);
 int vfs_read(const char* name, char* out_buffer);
 int vfs_update(const char* name, const char* new_content);
 int vfs_kernel_update(const char* name, const char* new_content);
 int vfs_delete(const char* name);
-void vfs_list_files(void); // Untuk perintah CLI: ls
+void vfs_list_files(void);
 
 #endif
