@@ -1,4 +1,3 @@
-
 #ifndef PROCESS_H
 #define PROCESS_H
 
@@ -103,7 +102,18 @@ typedef struct pcb {
 /* Inisialisasi manajemen proses dan thread */
 void process_init(void);
 
-/* Membuat proses baru beserta thread utamanya */
+/* Membuat proses baru dalam status NEW (belum masuk antrean READY) */
+pcb_t* process_create_new(
+    const char* name,
+    void (*entry_point)(void),
+    uint32_t priority,
+    privilege_level_t priv
+);
+
+/* Mengubah status proses dari NEW menjadi READY */
+void process_start(pcb_t* proc);
+
+/* Membuat proses baru sekaligus langsung mengaktifkannya ke status READY */
 pcb_t* process_create(
     const char* name,
     void (*entry_point)(void),
@@ -126,7 +136,6 @@ const char* process_state_to_str(process_state_t state);
 
 /* Pengujian Process Management */
 void process_test(void);
-
 
 /* Mengambil data proses berdasarkan indeks */
 pcb_t* process_get_by_index(uint32_t index);

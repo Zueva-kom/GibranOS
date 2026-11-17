@@ -15,7 +15,9 @@ build/boot.o: src/boot/boot.s
 build/main.o: src/kernel/main.c src/drivers/keyboard.h src/drivers/mouse.h src/drivers/serial.h src/kernel/02_Pengelolaan_Proses_Thread/process.h src/kernel/03_Penjadwalan_CPU_Preemptive/scheduler.h src/kernel/06_Alokator_Memori_Dinamis/heap.h src/kernel/07_Virtual_File_System/vfs.h src/shell/shell.h src/arch/i386/gdt.h src/arch/i386/idt.h src/arch/i386/timer.h
 	$(CC) $(CFLAGS) -c src/kernel/main.c -o build/main.o
 
-build/shell.o: src/shell/shell.c src/shell/shell.h src/drivers/keyboard.h src/drivers/mouse.h src/drivers/serial.h src/kernel/02_Pengelolaan_Proses_Thread/process.h src/kernel/03_Penjadwalan_CPU_Preemptive/scheduler.h src/kernel/04_Sinkronisasi/mutex.h src/kernel/05_Deadlock/deadlock.h src/kernel/06_Alokator_Memori_Dinamis/heap.h src/kernel/07_Virtual_File_System/vfs.h src/kernel/08_Proteksi_Hak_Akses/security.h src/kernel/game/game.h
+
+
+build/shell.o: src/shell/shell.c src/shell/shell.h src/arch/i386/timer.h src/drivers/keyboard.h src/drivers/mouse.h src/drivers/serial.h src/kernel/02_Pengelolaan_Proses_Thread/process.h src/kernel/03_Penjadwalan_CPU_Preemptive/scheduler.h src/kernel/04_Sinkronisasi/mutex.h src/kernel/05_Deadlock/deadlock.h src/kernel/06_Alokator_Memori_Dinamis/heap.h src/kernel/07_Virtual_File_System/vfs.h src/kernel/08_Proteksi_Hak_Akses/security.h src/kernel/game/game.h
 	$(CC) $(CFLAGS) -c src/shell/shell.c -o build/shell.o
 
 build/keyboard.o: src/drivers/keyboard.c src/drivers/keyboard.h

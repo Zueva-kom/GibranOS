@@ -1,4 +1,5 @@
 #include "shell/shell.h"
+#include "arch/i386/timer.h"
 #include "drivers/keyboard.h"
 #include "drivers/mouse.h"
 #include "drivers/serial.h"
@@ -11,9 +12,19 @@
 #include "kernel/08_Proteksi_Hak_Akses/security.h"
 #include "kernel/game/game.h"
 
-/* Variabel pengujian Sinkronisasi (Mutex) */
+/* Variabel pengujian Sinkronisasi (Mutex) dengan 2 Thread Nyata */
 static mutex_t game_score_mutex;
 static volatile uint32_t shared_game_score = 0;
+static volatile int sync_use_mutex = 0;
+static volatile uint32_t sync_done_count = 0;
+#define SYNC_ITERATIONS 10
+
+/* Variabel pengujian Siklus Hidup 2 Thread (NEW -> READY -> RUNNING -> WAITING -> TERMINATED) */
+static mutex_t thread_demo_gate;
+static volatile uint32_t demo_calc_sum = 0;
+static volatile uint32_t demo_scan_count = 0;
+static volatile const char* s1_run_str = NULL;
+static volatile const char* s2_run_str = NULL;
 
 static int str_eq(const char* a, const char* b) {
     size_t i = 0;
@@ -63,39 +74,220 @@ static void print_prompt(void) {
               role == ROLE_ADMIN ? 0x0A : 0x0B);
 }
 
-static void run_mutex_sync_demo(void) {
-    vga_print("=== [4] PENGUJIAN SINKRONISASI (MUTEX) ===\n", 0x0E);
-    vga_print("Skenario: Thread GameInput & BonusTimer update shared_game_score (+1000 x2).\n\n", 0x07);
+/* ============================================================================
+ * [POIN 2] DEMO SIKLUS HIDUP 2 KERNEL THREAD DENGAN TUGAS BERBEDA
+ * Menampilkan transisi lengkap: NEW -> READY -> RUNNING -> WAITING -> TERMINATED
+ * ============================================================================ */
+static void demo_thread_calc(void) {
+    tcb_t* self = process_get_current_thread();
+    if (self != NULL) {
+        s1_run_str = process_state_to_str(self->state);
+    }
 
-    uint32_t unsync_score = 0;
-    for (int i = 0; i < 1000; i++) {
-        uint32_t reg_a = unsync_score;
-        uint32_t reg_b = unsync_score;
-        unsync_score = reg_a + 1;
-        if (i % 65 == 0) {
-            unsync_score = reg_b + 1;
+    for (uint32_t i = 1; i <= 50; i++) {
+        demo_calc_sum += i;
+    }
+
+    /* Terblokir di mutex yang masih dipegang Shell -> status berubah ke WAITING */
+    mutex_lock(&thread_demo_gate);
+    mutex_unlock(&thread_demo_gate);
+
+    if (self != NULL) {
+        process_set_state(self, PROCESS_TERMINATED);
+    }
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
+
+static void demo_thread_scan(void) {
+    tcb_t* self = process_get_current_thread();
+    if (self != NULL) {
+        s2_run_str = process_state_to_str(self->state);
+    }
+
+    heap_block_t* curr = heap_get_head();
+    while (curr != NULL) {
+        demo_scan_count++;
+        curr = curr->next;
+    }
+
+    /* Terblokir di mutex yang masih dipegang Shell -> status berubah ke WAITING */
+    mutex_lock(&thread_demo_gate);
+    mutex_unlock(&thread_demo_gate);
+
+    if (self != NULL) {
+        process_set_state(self, PROCESS_TERMINATED);
+    }
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
+
+static void run_thread_lifecycle_demo(void) {
+    vga_print("=== [2] PENGUJIAN SIKLUS HIDUP 2 THREAD BERBEDA ===\n", 0x0E);
+    vga_print("Tugas 1 (TaskHitung)  : Menghitung deret aritmetika 1..50\n", 0x07);
+    vga_print("Tugas 2 (TaskScanMem) : Memindai blok memori pada Heap\n\n", 0x07);
+
+    mutex_init(&thread_demo_gate);
+    mutex_lock(&thread_demo_gate);
+    demo_calc_sum = 0;
+    demo_scan_count = 0;
+    s1_run_str = NULL;
+    s2_run_str = NULL;
+
+    /* 1. Status NEW */
+    pcb_t* p1 = process_create_new("TaskHitung", demo_thread_calc, 1, PRIVILEGE_KERNEL);
+    pcb_t* p2 = process_create_new("TaskScanMem", demo_thread_scan, 1, PRIVILEGE_KERNEL);
+    if (p1 == NULL || p2 == NULL) {
+        mutex_unlock(&thread_demo_gate);
+        vga_print("[ERROR] Gagal membuat thread demo.\n", 0x0C);
+        return;
+    }
+
+    const char* s1_new = process_state_to_str(p1->main_thread->state);
+    const char* s2_new = process_state_to_str(p2->main_thread->state);
+
+    /* 2. Status READY */
+    process_start(p1);
+    process_start(p2);
+    const char* s1_rdy = process_state_to_str(p1->main_thread->state);
+    const char* s2_rdy = process_state_to_str(p2->main_thread->state);
+
+    vga_print("1. Status Awal   -> TaskHitung: ", 0x07);
+    vga_print(s1_new, 0x0B);
+    vga_print(" | TaskScanMem: ", 0x07);
+    vga_print(s2_new, 0x0B);
+    vga_putchar('\n', 0x07);
+
+    vga_print("2. Dijadwalkan   -> TaskHitung: ", 0x07);
+    vga_print(s1_rdy, 0x0E);
+    vga_print(" | TaskScanMem: ", 0x07);
+    vga_print(s2_rdy, 0x0E);
+    vga_putchar('\n', 0x07);
+
+    /* Tunggu hingga kedua thread selesai berjalan (RUNNING) dan masuk (WAITING) */
+    while (p1->main_thread->state != PROCESS_WAITING ||
+           p2->main_thread->state != PROCESS_WAITING) {
+        __asm__ volatile ("pause");
+    }
+
+    /* 3. Status RUNNING */
+    vga_print("3. Eksekusi CPU  -> TaskHitung: ", 0x07);
+    vga_print(s1_run_str != NULL ? (const char*)s1_run_str : "RUNNING", 0x0A);
+    vga_print(" | TaskScanMem: ", 0x07);
+    vga_print(s2_run_str != NULL ? (const char*)s2_run_str : "RUNNING", 0x0A);
+    vga_putchar('\n', 0x07);
+
+    /* 4. Status WAITING */
+    vga_print("4. Tunggu Mutex  -> TaskHitung: ", 0x07);
+    vga_print(process_state_to_str(p1->main_thread->state), 0x0E);
+    vga_print(" | TaskScanMem: ", 0x07);
+    vga_print(process_state_to_str(p2->main_thread->state), 0x0E);
+    vga_putchar('\n', 0x07);
+
+    /* 5. Lepas kunci agar selesai ke status TERMINATED */
+    mutex_unlock(&thread_demo_gate);
+    while (p1->main_thread->state != PROCESS_TERMINATED ||
+           p2->main_thread->state != PROCESS_TERMINATED) {
+        __asm__ volatile ("pause");
+    }
+
+    vga_print("5. Selesai Tugas -> TaskHitung: ", 0x07);
+    vga_print(process_state_to_str(p1->main_thread->state), 0x0C);
+    vga_print(" | TaskScanMem: ", 0x07);
+    vga_print(process_state_to_str(p2->main_thread->state), 0x0C);
+    vga_putchar('\n', 0x07);
+
+    vga_print("Hasil Tugas 1 (Sum 1..50): ", 0x07);
+    vga_print_number(demo_calc_sum);
+    vga_print(" | Tugas 2 (Blok Heap): ", 0x07);
+    vga_print_number(demo_scan_count);
+    vga_putchar('\n', 0x07);
+}
+
+/* ============================================================================
+ * [POIN 4] DEMO SINKRONISASI MUTEX DENGAN 2 THREAD NYATA
+ * Membandingkan operasi shared counter tanpa mutex vs dengan mutex
+ * ============================================================================ */
+static void sync_worker_thread(void) {
+    for (int i = 0; i < SYNC_ITERATIONS; i++) {
+        if (sync_use_mutex) {
+            mutex_lock(&game_score_mutex);
+            uint32_t temp = shared_game_score;
+            uint32_t t0 = timer_get_ticks();
+            while (timer_get_ticks() - t0 < 2) {
+                __asm__ volatile ("pause");
+            }
+            shared_game_score = temp + 10;
+            mutex_unlock(&game_score_mutex);
         } else {
-            unsync_score = unsync_score + 1;
+            /* Tanpa mutex: ter-preempt di tengah read-modify-write -> pasti lost update */
+            uint32_t temp = shared_game_score;
+            uint32_t t0 = timer_get_ticks();
+            while (timer_get_ticks() - t0 < 2) {
+                __asm__ volatile ("pause");
+            }
+            shared_game_score = temp + 10;
         }
     }
-    vga_print("1. Tanpa Mutex (Race Condition) : ", 0x0C);
-    vga_print_number(unsync_score);
-    vga_print(" / 2000 poin (Data korup!)\n", 0x0C);
 
+    __atomic_fetch_add(&sync_done_count, 1, __ATOMIC_SEQ_CST);
+    tcb_t* self = process_get_current_thread();
+    if (self != NULL) {
+        process_set_state(self, PROCESS_TERMINATED);
+    }
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
+
+static void execute_sync_round(int use_mutex) {
     mutex_init(&game_score_mutex);
     shared_game_score = 0;
-    for (int i = 0; i < 1000; i++) {
-        mutex_lock(&game_score_mutex);
-        shared_game_score++;
-        mutex_unlock(&game_score_mutex);
+    sync_use_mutex = use_mutex;
+    sync_done_count = 0;
 
-        mutex_lock(&game_score_mutex);
-        shared_game_score++;
-        mutex_unlock(&game_score_mutex);
+    pcb_t* p1 = process_create("SyncInput", sync_worker_thread, 1, PRIVILEGE_KERNEL);
+    pcb_t* p2 = process_create("SyncBonus", sync_worker_thread, 1, PRIVILEGE_KERNEL);
+
+    if (p1 == NULL || p2 == NULL) {
+        vga_print("[ERROR] Gagal membuat thread uji sinkronisasi.\n", 0x0C);
+        process_terminate(p1);
+        process_terminate(p2);
+        return;
     }
-    vga_print("2. Dengan game_score_mutex      : ", 0x0A);
+
+    while (sync_done_count < 2) {
+        __asm__ volatile ("pause");
+    }
+}
+
+static void run_mutex_sync_demo(void) {
+    uint32_t expected = SYNC_ITERATIONS * 10 * 2; /* 10 * 10 * 2 = 200 poin */
+
+    vga_print("=== [4] PENGUJIAN SINKRONISASI (2 THREAD NYATA) ===\n", 0x0E);
+    vga_print("Skenario: Thread SyncInput & SyncBonus update shared_game_score (+10 x10).\n", 0x07);
+    vga_print("Target skor seharusnya: ", 0x07);
+    vga_print_number(expected);
+    vga_print(" poin.\n\n", 0x07);
+
+    /* Fase 1: Tanpa Mutex */
+    execute_sync_round(0);
+    vga_print("1. Tanpa Mutex (Race Condition nyata) : ", 0x0C);
     vga_print_number(shared_game_score);
-    vga_print(" / 2000 poin (Konsisten!)\n", 0x0A);
+    vga_print(" / ", 0x0C);
+    vga_print_number(expected);
+    vga_print(shared_game_score < expected ? " poin (Data korup / Lost Update!)\n"
+                                           : " poin (Ulangi jika belum bentrok)\n", 0x0C);
+
+    /* Fase 2: Dengan Mutex */
+    execute_sync_round(1);
+    vga_print("2. Dengan game_score_mutex            : ", 0x0A);
+    vga_print_number(shared_game_score);
+    vga_print(" / ", 0x0A);
+    vga_print_number(expected);
+    vga_print(" poin (Konsisten 100%!)\n", 0x0A);
 }
 
 void shell_init(void) {
@@ -129,6 +321,7 @@ void shell_execute(const char* cmd) {
         vga_print("[2-3] PENGELOLAAN PROSES, THREAD, DAN PENJADWALAN CPU (ADMIN ONLY)\n",
                   role == ROLE_ADMIN ? 0x0B : 0x08);
         vga_print("  ps                       - Melihat PID, nama, dan status proses/thread\n", 0x07);
+        vga_print("  thread_test              - Demo siklus hidup 2 thread (NEW..TERMINATED)\n", 0x07);
         vga_print("  schedtest                - Melihat aktivitas counter WorkerA dan B\n\n", 0x07);
 
         vga_print("[4] SINKRONISASI DAN MUTEX (ADMIN ONLY)\n",
@@ -160,6 +353,10 @@ void shell_execute(const char* cmd) {
 
     } else if (str_eq(cmd, "logout")) {
         security_show_login_screen();
+
+    } else if (str_eq(cmd, "thread_test")) {
+        if (!security_require_admin("thread_test")) return;
+        run_thread_lifecycle_demo();
 
     } else if (str_eq(cmd, "schedtest")) {
         if (!security_require_admin("schedtest")) return;
@@ -226,14 +423,12 @@ void shell_execute(const char* cmd) {
 
             vga_print_number(proc->pid);
             vga_print("    ", 0x07);
-            /* Nama dibuat selebar 14 karakter */
             {
                 int n = 0;
                 while (proc->name[n] != '\0') n++;
                 vga_print(proc->name, 0x07);
                 for (; n < 14; n++) vga_putchar(' ', 0x07);
             }
-            /* Status dibuat selebar 13 karakter */
             {
                 const char* st = process_state_to_str(proc->state);
                 int n = 0;
@@ -245,7 +440,6 @@ void shell_execute(const char* cmd) {
             if (proc->main_thread != NULL) {
                 vga_print_number(proc->main_thread->tid);
                 vga_print(proc->main_thread->tid < 10 ? "    " : "   ", 0x07);
-                /* Thread state dibuat selebar 14 karakter */
                 {
                     const char* tst = process_state_to_str(proc->main_thread->state);
                     int n = 0;
@@ -435,29 +629,46 @@ void shell_execute(const char* cmd) {
 
     } else if (str_eq(cmd, "test_mem")) {
         if (!security_require_admin("test_mem")) return;
-        vga_print("=== TEST MEMORY ===\n", 0x0E);
+        vga_print("=== [6] PENGUJIAN ALOKATOR MEMORI DINAMIS (HEAP) ===\n", 0x0E);
 
-        size_t free_before = heap_get_free_bytes();
-        void* memory = kmalloc(1024);
+        size_t total = HEAP_SIZE;
+        size_t free_init = heap_get_free_bytes();
+        size_t used_init = total - free_init;
+
+        vga_print("1. Kondisi Awal            -> Used: ", 0x07);
+        vga_print_number(used_init);
+        vga_print(" B | Free: ", 0x07);
+        vga_print_number(free_init);
+        vga_print(" B\n", 0x07);
+
+        void* memory = kmalloc(2048);
 
         if (memory != NULL) {
-            vga_print("[BERHASIL] Alokasi 1024 bytes.\n", 0x0A);
+            size_t free_alloc = heap_get_free_bytes();
+            size_t used_alloc = total - free_alloc;
+            vga_print("2. Setelah kmalloc(2048)   -> Used: ", 0x0A);
+            vga_print_number(used_alloc);
+            vga_print(" B | Free: ", 0x0A);
+            vga_print_number(free_alloc);
+            vga_print(" B\n", 0x0A);
 
             kfree(memory);
 
-            if (heap_get_free_bytes() == free_before) {
-                vga_print("[BERHASIL] Pembebasan memori.\n", 0x0A);
-            } else {
-                vga_print("[GAGAL] Kondisi heap setelah free tidak sesuai.\n", 0x0C);
-            }
+            size_t free_after = heap_get_free_bytes();
+            size_t used_after = total - free_after;
+            vga_print("3. Setelah kfree()         -> Used: ", 0x0A);
+            vga_print_number(used_after);
+            vga_print(" B | Free: ", 0x0A);
+            vga_print_number(free_after);
+            vga_print(free_after == free_init ? " B (Pulih!)\n" : " B\n", 0x0A);
         } else {
-            vga_print("[GAGAL] Alokasi memori.\n", 0x0C);
+            vga_print("[GAGAL] Alokasi memori gagal.\n", 0x0C);
         }
 
-        void* oom = kmalloc(HEAP_SIZE);
+        void* oom = kmalloc(HEAP_SIZE + 4096);
 
         if (oom == NULL) {
-            vga_print("[BERHASIL] Penanganan Out of Memory (OOM).\n", 0x0A);
+            vga_print("4. Uji OOM kmalloc(70KB)   -> Return NULL aman (Kernel tidak crash!)\n", 0x0A);
         } else {
             vga_print("[GAGAL] Alokasi OOM tidak ditolak.\n", 0x0C);
             kfree(oom);

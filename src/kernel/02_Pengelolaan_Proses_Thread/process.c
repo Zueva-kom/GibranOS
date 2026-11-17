@@ -1,4 +1,3 @@
-
 #include "process.h"
 #include "../03_Penjadwalan_CPU_Preemptive/scheduler.h"
 
@@ -121,14 +120,13 @@ void process_init(void) {
     next_tid = 1;
 }
 
-/* Membuat proses baru beserta thread utamanya */
-pcb_t* process_create(
+/* Membuat proses baru dalam status NEW */
+pcb_t* process_create_new(
     const char* name,
     void (*entry_point)(void),
     uint32_t priority,
     privilege_level_t priv
 ) {
-    /* Entry point wajib tersedia */
     if (entry_point == NULL) {
         return NULL;
     }
@@ -143,12 +141,10 @@ pcb_t* process_create(
         reused = 1;
         thread_slot = (int)(process_table[process_slot].main_thread - &thread_table[0]);
     } else {
-        /* Mencari slot proses dan thread kosong */
         process_slot = find_free_process_slot();
         thread_slot = find_free_thread_slot();
     }
 
-    /* Memastikan slot tersedia */
     if (process_slot < 0 || thread_slot < 0) {
         irq_restore(flags);
         return NULL;
@@ -157,7 +153,7 @@ pcb_t* process_create(
     pcb_t* proc = &process_table[process_slot];
     tcb_t* thread = &thread_table[thread_slot];
 
-    /* Mengisi informasi PCB */
+    /* Mengisi informasi PCB dengan status awal NEW */
     if (!reused) {
         proc->pid = next_pid++;
         copy_name(proc->name, name, sizeof(proc->name));
@@ -169,7 +165,7 @@ pcb_t* process_create(
     proc->state = PROCESS_NEW;
     proc->privilege = priv;
 
-    /* Mengisi informasi TCB */
+    /* Mengisi informasi TCB dengan status awal NEW */
     thread->state = PROCESS_NEW;
     thread->priority = priority;
     thread->time_slice = 0;
@@ -213,13 +209,36 @@ pcb_t* process_create(
 
     thread->esp = (uint32_t)ctx;
 
-    /* Memasukkan thread ke status READY */
-    process_set_state(thread, PROCESS_READY);
     if (!reused) {
         scheduler_add_thread(thread);
     }
 
     irq_restore(flags);
+    return proc;
+}
+
+/* Memindahkan proses dari status NEW ke READY */
+void process_start(pcb_t* proc) {
+    if (proc == NULL || proc->main_thread == NULL) {
+        return;
+    }
+
+    uint32_t flags = irq_save();
+    process_set_state(proc->main_thread, PROCESS_READY);
+    irq_restore(flags);
+}
+
+/* Membuat proses baru sekaligus langsung memasukkannya ke status READY */
+pcb_t* process_create(
+    const char* name,
+    void (*entry_point)(void),
+    uint32_t priority,
+    privilege_level_t priv
+) {
+    pcb_t* proc = process_create_new(name, entry_point, priority, priv);
+    if (proc != NULL) {
+        process_start(proc);
+    }
     return proc;
 }
 
@@ -291,7 +310,6 @@ void process_test(void) {
         return;
     }
 }
-
 
 /* Mengambil proses berdasarkan indeks */
 pcb_t* process_get_by_index(uint32_t index) {
