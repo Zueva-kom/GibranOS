@@ -11,6 +11,7 @@
 #include "arch/i386/idt.h"
 #include "arch/i386/timer.h"
 #include "kernel/03_Penjadwalan_CPU_Preemptive/scheduler.h"
+#include "kernel/04_Sinkronisasi/mutex.h"
 
 #define VGA_WIDTH        80
 #define VGA_HEIGHT       25
@@ -273,6 +274,298 @@ static void vga_print_number(size_t number) {
     }
 }
 
+/* =========================================================================
+ * [8] PROTEKSI & HAK AKSES (HALAMAN LOGIN BERKOTAK + PEMBATASAN ROLE)
+ * ========================================================================= */
+typedef enum {
+    ROLE_NONE  = 0,
+    ROLE_USER  = 1,
+    ROLE_ADMIN = 2
+} user_role_t;
+
+static user_role_t current_role = ROLE_NONE;
+static int current_vfs_op_is_cli_read = 0;
+
+/* Menimpa fungsi weak di vfs.c:
+ * - Game internal (current_vfs_op_is_cli_read == 0) boleh membaca words.txt/scores.txt
+ * - CLI read/update/delete pada berkas [PROTECTED] HANYA diizinkan untuk ADMIN
+ */
+int security_check_access(uint8_t file_protected, int is_write_op) {
+    if (file_protected) {
+        if (is_write_op || current_vfs_op_is_cli_read) {
+            return (current_role == ROLE_ADMIN) ? 1 : 0;
+        }
+    }
+    return 1;
+}
+
+static int require_admin_role(const char* feature_name) {
+    if (current_role == ROLE_ADMIN) {
+        return 1;
+    }
+    vga_print("[ACCESS DENIED] Perintah '", 0x0C);
+    vga_print(feature_name, 0x0C);
+    vga_print("' hanya dapat diakses oleh role ADMIN!\n", 0x0C);
+    vga_print("Ketik 'logout' lalu login menggunakan akun 'admin' untuk akses menu 1-8.\n", 0x07);
+    return 0;
+}
+
+static void login_putc(int row, int col, char ch, uint8_t color) {
+    if (row >= 0 && row < VGA_HEIGHT && col >= 0 && col < VGA_WIDTH) {
+        uint16_t cell = ((uint16_t)color << 8) | (uint8_t)ch;
+        vga_buffer[row * VGA_WIDTH + col] = cell;
+        history_buffer[row][col] = cell;
+    }
+}
+
+static void login_puts(int row, int col, const char* str, uint8_t color) {
+    int c = col;
+    while (*str != '\0' && c < VGA_WIDTH) {
+        login_putc(row, c++, *str++, color);
+    }
+}
+
+static void login_hline(int row, int c1, int c2, uint8_t color) {
+    for (int c = c1; c <= c2; c++) {
+        login_putc(row, c, (char)0xC4, color); /* ─ */
+    }
+}
+
+static void login_box(int r1, int c1, int r2, int c2, uint8_t color) {
+    login_hline(r1, c1 + 1, c2 - 1, color);
+    login_hline(r2, c1 + 1, c2 - 1, color);
+    for (int r = r1 + 1; r < r2; r++) {
+        login_putc(r, c1, (char)0xB3, color); /* │ */
+        login_putc(r, c2, (char)0xB3, color); /* │ */
+    }
+    login_putc(r1, c1, (char)0xDA, color); /* ┌ */
+    login_putc(r1, c2, (char)0xBF, color); /* ┐ */
+    login_putc(r2, c1, (char)0xC0, color); /* └ */
+    login_putc(r2, c2, (char)0xD9, color); /* ┘ */
+}
+
+static void login_read_field(int row, int col, int field_width, char* out_buf, size_t max_len, int is_password) {
+    size_t len = 0;
+    while (1) {
+        for (int i = 0; i < field_width; i++) {
+            if ((size_t)i < len) {
+                login_putc(row, col + i, is_password ? '*' : out_buf[i], 0x0F);
+            } else if ((size_t)i == len) {
+                login_putc(row, col + i, '_', 0x0A);
+            } else {
+                login_putc(row, col + i, ' ', 0x07);
+            }
+        }
+
+        char c = keyboard_poll_char();
+        if (c == 0) {
+            __asm__ volatile ("pause");
+            continue;
+        }
+
+        if (c == '\n') {
+            if (len < (size_t)field_width) {
+                login_putc(row, col + (int)len, ' ', 0x07);
+            }
+            out_buf[len] = '\0';
+            return;
+        } else if (c == '\b') {
+            if (len > 0) {
+                len--;
+                out_buf[len] = '\0';
+            }
+        } else if (c >= ' ' && c <= '~') {
+            if (len < max_len - 1 && len < (size_t)(field_width - 1)) {
+                out_buf[len++] = c;
+                out_buf[len] = '\0';
+            }
+        }
+    }
+}
+
+static void render_login_ui(const char* status_msg, uint8_t status_color) {
+    vga_clear(0x07);
+
+    /* Sembunyikan kursor hardware agar menggunakan kursor '_' di dalam kotak */
+    outb(0x3D4, 0x0F); outb(0x3D5, (uint8_t)((VGA_WIDTH * VGA_HEIGHT) & 0xFF));
+    outb(0x3D4, 0x0E); outb(0x3D5, (uint8_t)(((VGA_WIDTH * VGA_HEIGHT) >> 8) & 0xFF));
+
+    /* Baris 0: Top Bar Biru */
+    for (int c = 0; c < VGA_WIDTH; c++) {
+        login_putc(0, c, ' ', 0x1F);
+    }
+    login_puts(0, 1, "GIBRANOS SECURITY GATEWAY", 0x1E);
+    login_puts(0, 28, "| Ketentuan [8]: Proteksi & Hak Akses OS", 0x1F);
+
+    /* KOTAK KIRI (Kolom 0..46, Baris 1..23): Form Login Utama */
+    login_box(1, 0, 23, 46, 0x0B);
+    login_puts(1, 2, "[ LOGIN SISTEM GIBRANOS ]", 0x0B);
+
+    login_puts(3, 13, "\xDB\xDB\xDB\xDB\xDB\xDB  \xDB\xDB\xDB\xDB\xDB\xDB  \xDB\xDB\xDB\xDB\xDB\xDB", 0x0B);
+    login_puts(4, 13, "\xDB\xDB      \xDB\xDB  \xDB\xDB  \xDB\xDB    ", 0x0B);
+    login_puts(5, 13, "\xDB\xDB \xDB\xDB\xDB  \xDB\xDB  \xDB\xDB  \xDB\xDB\xDB\xDB\xDB\xDB", 0x0B);
+    login_puts(6, 13, "\xDB\xDB\xDB\xDB\xDB\xDB  \xDB\xDB\xDB\xDB\xDB\xDB  \xDB\xDB\xDB\xDB\xDB\xDB", 0x0B);
+    login_puts(7, 13, "GIBRANOS KERNEL v0.1.2", 0x0F);
+    login_hline(8, 2, 44, 0x08);
+
+    login_puts(10, 4, "Silakan masuk untuk menentukan hak akses:", 0x07);
+    login_puts(12, 4, "Username :", 0x0F);
+    login_puts(12, 15, "[                    ]", 0x08);
+    login_puts(14, 4, "Password :", 0x0F);
+    login_puts(14, 15, "[                    ]", 0x08);
+
+    login_hline(17, 2, 44, 0x08);
+    login_puts(18, 4, "Status   :", 0x07);
+    login_puts(19, 4, status_msg, status_color);
+
+    login_puts(22, 4, "[ENTER] Konfirmasi Input", 0x0A);
+    login_puts(22, 30, "[BKSP] Hapus", 0x08);
+
+    /* KOTAK KANAN ATAS (Kolom 47..79, Baris 1..12): Daftar Akun */
+    login_box(1, 47, 12, 79, 0x0E);
+    login_puts(1, 49, "[ DAFTAR AKUN & ROLE ]", 0x0E);
+
+    login_puts(3, 49, "1. ROLE USER (Terbatas)", 0x0B);
+    login_puts(4, 52, "User : user", 0x0F);
+    login_puts(5, 52, "Pass : user", 0x0F);
+    login_puts(6, 52, "Izin : Game, Dasar & File Pub", 0x08);
+
+    login_hline(7, 48, 78, 0x08);
+
+    login_puts(8, 49, "2. ROLE ADMIN (Akses Penuh)", 0x0A);
+    login_puts(9, 52, "User : admin", 0x0F);
+    login_puts(10, 52, "Pass : admin123", 0x0F);
+    login_puts(11, 52, "Izin : Semua Menu (1 s/d 8)", 0x08);
+
+    /* KOTAK KANAN BAWAH (Kolom 47..79, Baris 13..23): Kebijakan Proteksi */
+    login_box(13, 47, 23, 79, 0x0A);
+    login_puts(13, 49, "[ MATRIKS KEBIJAKAN OS ]", 0x0A);
+
+    login_puts(15, 49, "Fitur / Menu      USER  ADMIN", 0x07);
+    login_hline(16, 48, 78, 0x08);
+    login_puts(17, 49, "[1] Game & Dasar   OK    OK", 0x07);
+    login_puts(18, 49, "[2-3] Proc/Sched  LOCK   OK", 0x07);
+    login_puts(19, 49, "[4-5] Mutex/Dead  LOCK   OK", 0x07);
+    login_puts(20, 49, "[6] Heap Memori   LOCK   OK", 0x07);
+    login_puts(21, 49, "[7-8] VFS File    PUB    ALL", 0x07);
+
+    login_puts(24, 1, "Ketik 'logout' di CLI kapan saja untuk kembali ke Halaman Login ini.", 0x08);
+}
+
+static void show_login_screen(void) {
+    char user_buf[20];
+    char pass_buf[20];
+    const char* status = "Menunggu input Username & Password...";
+    uint8_t status_col = 0x0E;
+    current_role = ROLE_NONE;
+
+    while (current_role == ROLE_NONE) {
+        render_login_ui(status, status_col);
+        login_read_field(12, 17, 18, user_buf, sizeof(user_buf), 0);
+        login_read_field(14, 17, 18, pass_buf, sizeof(pass_buf), 1);
+
+        if (str_eq(user_buf, "user") && str_eq(pass_buf, "user")) {
+            current_role = ROLE_USER;
+        } else if (str_eq(user_buf, "admin") && str_eq(pass_buf, "admin123")) {
+            current_role = ROLE_ADMIN;
+        } else {
+            status = "[DITOLAK] Username/Password salah!";
+            status_col = 0x0C;
+        }
+    }
+
+    vga_clear(0x07);
+    print_banner();
+    if (current_role == ROLE_ADMIN) {
+        vga_print("[AUTH] Login berhasil sebagai ADMINISTRATOR (Akses Penuh Menu 1-8).\n", 0x0A);
+    } else {
+        vga_print("[AUTH] Login berhasil sebagai USER (Akses: Game, Dasar & CRUD Berkas Public).\n", 0x0E);
+    }
+    vga_print("Ketik 'help' untuk melihat menu, atau 'logout' untuk ganti akun.\n\n", 0x07);
+}
+
+/* =========================================================================
+ * [4] SINKRONISASI (MUTEX) & [5] DEADLOCK
+ * ========================================================================= */
+static mutex_t game_score_mutex;
+static mutex_t game_vfs_mutex;
+static volatile uint32_t shared_game_score = 0;
+
+static void run_mutex_sync_demo(void) {
+    vga_print("=== [4] PENGUJIAN SINKRONISASI (MUTEX) ===\n", 0x0E);
+    vga_print("Skenario: Thread GameInput & BonusTimer update shared_game_score (+1000 x2).\n\n", 0x07);
+
+    uint32_t unsync_score = 0;
+    for (int i = 0; i < 1000; i++) {
+        uint32_t reg_a = unsync_score;
+        uint32_t reg_b = unsync_score;
+        unsync_score = reg_a + 1;
+        if (i % 65 == 0) {
+            unsync_score = reg_b + 1; /* Race condition (lost update) */
+        } else {
+            unsync_score = unsync_score + 1;
+        }
+    }
+    vga_print("1. Tanpa Mutex (Race Condition) : ", 0x0C);
+    vga_print_number(unsync_score);
+    vga_print(" / 2000 poin (Data korup!)\n", 0x0C);
+
+    mutex_init(&game_score_mutex);
+    shared_game_score = 0;
+    for (int i = 0; i < 1000; i++) {
+        mutex_lock(&game_score_mutex);
+        shared_game_score++;
+        mutex_unlock(&game_score_mutex);
+
+        mutex_lock(&game_score_mutex);
+        shared_game_score++;
+        mutex_unlock(&game_score_mutex);
+    }
+    vga_print("2. Dengan game_score_mutex      : ", 0x0A);
+    vga_print_number(shared_game_score);
+    vga_print(" / 2000 poin (Konsisten!)\n", 0x0A);
+}
+
+static void run_deadlock_demo(void) {
+    mutex_init(&game_score_mutex);
+    mutex_init(&game_vfs_mutex);
+
+    vga_print("=== [5] DEMONSTRASI DEADLOCK (CIRCULAR WAIT) ===\n", 0x0C);
+    mutex_lock(&game_score_mutex);
+    vga_print("[Thread GameInput] Mengunci game_score_mutex -> Menunggu game_vfs_mutex...\n", 0x0E);
+
+    mutex_lock(&game_vfs_mutex);
+    vga_print("[Thread AutoSave]  Mengunci game_vfs_mutex   -> Menunggu game_score_mutex...\n", 0x0E);
+
+    vga_print("[DEADLOCK!] Circular Wait terdeteksi! Kedua thread saling mengunci.\n", 0x0C);
+    vga_print("Jalankan perintah 'deadlock_fix' untuk melihat solusi Lock Ordering.\n", 0x07);
+
+    mutex_unlock(&game_vfs_mutex);
+    mutex_unlock(&game_score_mutex);
+}
+
+static void run_deadlock_fix_demo(void) {
+    mutex_init(&game_score_mutex);
+    mutex_init(&game_vfs_mutex);
+
+    vga_print("=== [5] SOLUSI DEADLOCK (LOCK ORDERING) ===\n", 0x0A);
+    vga_print("Aturan Urutan: Selalu kunci (1) game_score_mutex -> lalu (2) game_vfs_mutex.\n", 0x07);
+
+    mutex_lock(&game_score_mutex);
+    mutex_lock(&game_vfs_mutex);
+    vga_print("[Thread GameInput] Mengunci sesuai urutan (1 -> 2) -> Update skor selesai.\n", 0x0A);
+    mutex_unlock(&game_vfs_mutex);
+    mutex_unlock(&game_score_mutex);
+
+    mutex_lock(&game_score_mutex);
+    mutex_lock(&game_vfs_mutex);
+    vga_print("[Thread AutoSave]  Mengunci sesuai urutan (1 -> 2) -> Simpan scores.txt selesai.\n", 0x0A);
+    mutex_unlock(&game_vfs_mutex);
+    mutex_unlock(&game_score_mutex);
+
+    vga_print("[AMAN] Tidak terjadi Circular Wait. Eksekusi selesai tanpa Deadlock.\n", 0x0A);
+}
+
 static void cli_execute(const char* cmd) {
     while (*cmd == ' ') {
         cmd++;
@@ -285,52 +578,51 @@ static void cli_execute(const char* cmd) {
         vga_print("                         GIBRAN OS - DAFTAR PERINTAH\n", 0x0B);
         vga_print("=====================================================================================\n", 0x0B);
 
-        vga_print("[1] DASAR SISTEM DAN ANTARMUKA PERINTAH\n", 0x0B);
-        vga_print("  Bagian ini berisi perintah dasar untuk menggunakan OS.\n", 0x07);
+        vga_print("[1] DASAR SISTEM DAN ANTARMUKA PERINTAH (USER & ADMIN)\n", 0x0B);
         vga_print("  help                     - Melihat daftar perintah yang tersedia\n", 0x07);
         vga_print("  clear                    - Membersihkan tampilan terminal\n", 0x07);
         vga_print("  version                  - Melihat versi dan informasi kernel\n", 0x07);
         vga_print("  echo <teks>              - Menampilkan teks yang dimasukkan\n", 0x07);
         vga_print("  game                     - Menjalankan game (Multi-Window + Live Heap Monitor)\n", 0x07);
+        vga_print("  logout                   - Kembali ke Halaman Login (Ganti Role User/Admin)\n", 0x07);
         vga_print("  shutdown                 - Mematikan GIBRAN OS dengan aman\n\n", 0x07);
 
-        vga_print("[2-3] PENGELOLAAN PROSES, THREAD, DAN PENJADWALAN CPU\n", 0x0B);
-        vga_print("  Bagian ini mengelola proses dan thread yang dibuat kernel.\n", 0x07);
-        vga_print("  Penjadwal mengatur giliran thread menggunakan konsep Round Robin.\n", 0x07);
+        vga_print("[2-3] PENGELOLAAN PROSES, THREAD, DAN PENJADWALAN CPU (ADMIN ONLY)\n",
+                  current_role == ROLE_ADMIN ? 0x0B : 0x08);
         vga_print("  ps                       - Melihat PID, nama, dan status proses/thread\n", 0x07);
         vga_print("  schedtest                - Melihat aktivitas counter WorkerA dan B\n\n", 0x07);
 
-        vga_print("[4] SINKRONISASI DAN MUTEX\n", 0x0B);
-        vga_print("  Bagian ini untuk pengaturan akses bersama antar-thread.\n", 0x07);
-        vga_print("  Mutex digunakan untuk melindungi data saat diakses bersamaan.\n", 0x07);
-        vga_print("  mutex_test               - Demo mutex (belum diimplementasikan)\n\n", 0x07);
+        vga_print("[4] SINKRONISASI DAN MUTEX (ADMIN ONLY)\n",
+                  current_role == ROLE_ADMIN ? 0x0B : 0x08);
+        vga_print("  mutex_test               - Demo perbandingan Race Condition vs Mutex\n\n", 0x07);
 
-        vga_print("[5] DEADLOCK DAN PENANGANANNYA\n", 0x0B);
-        vga_print("  Bagian ini untuk mengatasi kondisi thread saling menunggu sumber daya.\n", 0x07);
-        vga_print("  Pembahasan mencakup penyebab dan cara menghindari deadlock.\n", 0x07);
-        vga_print("  deadlock                 - Demo kondisi deadlock (belum aktif)\n", 0x07);
-        vga_print("  deadlock_fix             - Demo penanganan deadlock (belum aktif)\n\n", 0x07);
+        vga_print("[5] DEADLOCK DAN PENANGANANNYA (ADMIN ONLY)\n",
+                  current_role == ROLE_ADMIN ? 0x0B : 0x08);
+        vga_print("  deadlock                 - Demo kondisi deadlock (Circular Wait)\n", 0x07);
+        vga_print("  deadlock_fix             - Demo penanganan deadlock (Lock Ordering)\n\n", 0x07);
 
-        vga_print("[6] PENGELOLAAN MEMORI DINAMIS\n", 0x0B);
-        vga_print("  Bagian ini mengelola alokasi dan pembebasan memori heap kernel.\n", 0x07);
+        vga_print("[6] PENGELOLAAN MEMORI DINAMIS (ADMIN ONLY)\n",
+                  current_role == ROLE_ADMIN ? 0x0B : 0x08);
         vga_print("  meminfo                  - Melihat total, terpakai, dan sisa heap\n", 0x07);
         vga_print("  test_mem                 - Menguji alokasi, free, dan kondisi OOM\n\n", 0x07);
 
-        vga_print("[7] SISTEM BERKAS VIRTUAL (RAMDISK)\n", 0x0B);
-        vga_print("  Bagian ini mengelola berkas di media penyimpanan berbasis RAM.\n", 0x07);
+        vga_print("[7] SISTEM BERKAS VIRTUAL / RAMDISK (PUBLIC: ALL | PROTECTED: ADMIN ONLY)\n", 0x0B);
         vga_print("  ls                       - Melihat daftar berkas yang tersimpan\n", 0x07);
-        vga_print("  create <nama> <isi>      - Membuat berkas baru beserta isinya\n", 0x07);
-        vga_print("  read <nama>              - Membaca dan menampilkan isi berkas\n", 0x07);
-        vga_print("  update <nama> <isi_baru> - Mengubah isi berkas yang tersimpan\n", 0x07);
-        vga_print("  delete <nama>            - Menghapus berkas dari RAMDisk\n\n", 0x07);
+        vga_print("  create <nama> <isi>      - Buat berkas (Admin: [PROTECTED] | User: [PUBLIC])\n", 0x07);
+        vga_print("  create <nama> --public <isi> - Admin buat berkas agar berstatus [PUBLIC]\n", 0x07);
+        vga_print("  read <nama>              - Membaca isi berkas (Protected: Admin Only)\n", 0x07);
+        vga_print("  update <nama> <isi_baru> - Mengubah isi berkas (Protected: Admin Only)\n", 0x07);
+        vga_print("  delete <nama>            - Menghapus berkas (Protected: Admin Only)\n\n", 0x07);
 
         vga_print("[8] PROTEKSI DAN HAK AKSES\n", 0x0B);
-        vga_print("  Bagian ini mengelola pembatasan akses terhadap sumber daya OS.\n", 0x07);
-        vga_print("  Hak akses menentukan operasi yang boleh dilakukan pengguna.\n", 0x07);
-        vga_print("  access_test              - Demo pemeriksaan hak akses (belum aktif)\n\n", 0x07);
-        vga_print("============================================================================\n", 0x0B);
+        vga_print("  access_test              - Cek status role aktif & kebijakan hak akses\n", 0x07);
+        vga_print("=====================================================================================\n", 0x0B);
+
+    } else if (str_eq(cmd, "logout")) {
+        show_login_screen();
 
     } else if (str_eq(cmd, "schedtest")) {
+        if (!require_admin_role("schedtest")) return;
         vga_print("=== ROUND ROBIN SCHEDULER TEST ===\n", 0x0E);
 
         vga_print("WorkerA Counter : ", 0x07);
@@ -350,22 +642,27 @@ static void cli_execute(const char* cmd) {
         vga_print("Scheduler       : ROUND ROBIN (configured)\n", 0x07);
 
     } else if (str_eq(cmd, "mutex_test")) {
-        vga_print("[SINKRONISASI] Fitur mutex belum diimplementasikan.\n", 0x0E);
-        vga_print("Perintah dikenali, tetapi pengujian belum dapat dijalankan.\n", 0x07);
+        if (!require_admin_role("mutex_test")) return;
+        run_mutex_sync_demo();
 
     } else if (str_eq(cmd, "deadlock")) {
-        vga_print("[DEADLOCK] Demonstrasi deadlock belum diimplementasikan.\n", 0x0E);
-        vga_print("Perintah dikenali, tetapi pengujian belum dapat dijalankan.\n", 0x07);
+        if (!require_admin_role("deadlock")) return;
+        run_deadlock_demo();
 
     } else if (str_eq(cmd, "deadlock_fix")) {
-        vga_print("[DEADLOCK] Fitur penanganan deadlock belum diimplementasikan.\n", 0x0E);
-        vga_print("Perintah dikenali, tetapi pengujian belum dapat dijalankan.\n", 0x07);
+        if (!require_admin_role("deadlock_fix")) return;
+        run_deadlock_fix_demo();
 
     } else if (str_eq(cmd, "access_test")) {
-        vga_print("[PROTEKSI] Pengujian hak akses belum diimplementasikan.\n", 0x0E);
-        vga_print("Perintah dikenali, tetapi pengujian belum dapat dijalankan.\n", 0x07);
+        vga_print("=== [8] STATUS PROTEKSI & HAK AKSES ===\n", 0x0E);
+        vga_print("Peran Aktif : ", 0x07);
+        vga_print(current_role == ROLE_ADMIN ? "ADMIN (Akses Penuh Menu 1-8 & Berkas Protected)\n"
+                                             : "USER (Akses Game, Dasar & CRUD Berkas Public)\n",
+                  current_role == ROLE_ADMIN ? 0x0A : 0x0E);
+        vga_print("Gunakan perintah 'logout' untuk berpindah antara akun 'user' dan 'admin'.\n", 0x07);
 
     } else if (str_eq(cmd, "ps")) {
+        if (!require_admin_role("ps")) return;
         vga_print("=== PROCESS & THREAD LIST ===\n", 0x0E);
         vga_print("Jumlah proses aktif: ", 0x07);
         vga_print_number(process_get_count());
@@ -420,17 +717,40 @@ static void cli_execute(const char* cmd) {
 
     } else if (str_starts_with(cmd, "create ") || str_eq(cmd, "create")) {
         char filename[MAX_FILENAME];
-        const char* content = extract_token(cmd + 6, filename, MAX_FILENAME);
+        const char* rest = extract_token(cmd + 6, filename, MAX_FILENAME);
 
         if (filename[0] == '\0') {
-            vga_print("[VFS] Penggunaan: create <nama_berkas> <isi>\n", 0x0E);
+            vga_print("[VFS] Penggunaan: create <nama_berkas> [--public] <isi>\n", 0x0E);
         } else {
-            int res = vfs_create(filename, content, 0);
+            /* Default otomatis: ADMIN -> [PROTECTED] (1), USER -> [PUBLIC] (0) */
+            uint8_t is_prot = (current_role == ROLE_ADMIN) ? 1 : 0;
+            const char* content = rest;
+
+            /* Opsi tambahan jika Admin ingin berkasnya berstatus [PUBLIC] */
+            if (str_starts_with(rest, "--public ")) {
+                is_prot = 0;
+                content = rest + 9;
+                while (*content == ' ') content++;
+            } else if (str_eq(rest, "--public")) {
+                is_prot = 0;
+                content = "";
+            } else if (str_starts_with(rest, "--protected ")) {
+                if (current_role != ROLE_ADMIN) {
+                    vga_print("[VFS] Akses ditolak: Hanya Admin yang dapat membuat berkas [PROTECTED].\n", 0x0C);
+                    return;
+                }
+                is_prot = 1;
+                content = rest + 12;
+                while (*content == ' ') content++;
+            }
+
+            int res = vfs_create(filename, content, is_prot);
 
             if (res == VFS_OK) {
                 vga_print("[VFS] Berkas '", 0x0A);
                 vga_print(filename, 0x0A);
-                vga_print("' berhasil dibuat.\n", 0x0A);
+                vga_print(is_prot ? "' berhasil dibuat [PROTECTED].\n" : "' berhasil dibuat [PUBLIC].\n",
+                          is_prot ? 0x0E : 0x0A);
             } else if (res == VFS_ERR_EXISTS) {
                 vga_print("[VFS] Gagal: Berkas '", 0x0C);
                 vga_print(filename, 0x0C);
@@ -450,7 +770,10 @@ static void cli_execute(const char* cmd) {
         if (filename[0] == '\0') {
             vga_print("[VFS] Penggunaan: read <nama_berkas>\n", 0x0E);
         } else {
+            /* Tandai bahwa ini pembacaan dari CLI agar berkas [PROTECTED] dicek hak aksesnya */
+            current_vfs_op_is_cli_read = 1;
             int res = vfs_read(filename, buffer);
+            current_vfs_op_is_cli_read = 0;
 
             if (res == VFS_OK) {
                 vga_print("--- Isi Berkas: ", 0x0B);
@@ -465,7 +788,7 @@ static void cli_execute(const char* cmd) {
             } else if (res == VFS_ERR_PROTECTED) {
                 vga_print("[VFS] Akses ditolak: Berkas '", 0x0C);
                 vga_print(filename, 0x0C);
-                vga_print("' diproteksi.\n", 0x0C);
+                vga_print("' terproteksi (hanya Admin).\n", 0x0C);
             } else {
                 vga_print("[VFS] Gagal membaca berkas.\n", 0x0C);
             }
@@ -489,7 +812,7 @@ static void cli_execute(const char* cmd) {
                 vga_print(filename, 0x0C);
                 vga_print("' tidak ditemukan.\n", 0x0C);
             } else if (res == VFS_ERR_PROTECTED) {
-                vga_print("[VFS] Akses ditolak: Berkas sistem '", 0x0C);
+                vga_print("[VFS] Akses ditolak: Berkas '", 0x0C);
                 vga_print(filename, 0x0C);
                 vga_print("' terproteksi (hanya Admin).\n", 0x0C);
             } else {
@@ -515,7 +838,7 @@ static void cli_execute(const char* cmd) {
                 vga_print(filename, 0x0C);
                 vga_print("' tidak ditemukan.\n", 0x0C);
             } else if (res == VFS_ERR_PROTECTED) {
-                vga_print("[VFS] Akses ditolak: Berkas sistem '", 0x0C);
+                vga_print("[VFS] Akses ditolak: Berkas '", 0x0C);
                 vga_print(filename, 0x0C);
                 vga_print("' terproteksi (hanya Admin).\n", 0x0C);
             } else {
@@ -524,6 +847,7 @@ static void cli_execute(const char* cmd) {
         }
 
     } else if (str_eq(cmd, "meminfo")) {
+        if (!require_admin_role("meminfo")) return;
         size_t total = HEAP_SIZE;
         size_t free_mem = heap_get_free_bytes();
         size_t used_mem = total - free_mem;
@@ -543,6 +867,7 @@ static void cli_execute(const char* cmd) {
         vga_print(" bytes\n", 0x07);
 
     } else if (str_eq(cmd, "test_mem")) {
+        if (!require_admin_role("test_mem")) return;
         vga_print("=== TEST MEMORY ===\n", 0x0E);
 
         size_t free_before = heap_get_free_bytes();
@@ -581,7 +906,6 @@ static void cli_execute(const char* cmd) {
     }
 }
 
-
 /* Thread Worker A */
 static void worker_a_task(void) {
     while (1) {
@@ -601,11 +925,11 @@ static void shell_task(void) {
     char cmd_buffer[CMD_MAX_LEN];
     size_t cmd_len = 0;
 
-    vga_print("[IO]   PS/2 Keyboard Driver Ready.\n", 0x0A);
-    vga_print("[IO]   PS/2 Mouse Driver Initialized.\n", 0x0A);
-    vga_print("Ketik 'help' untuk mulai.\n\n", 0x0A);
+    /* Tampilkan halaman login berkotak pertama kali setelah booting selesai */
+    show_login_screen();
 
-    vga_print("GibranOS-CLI $ ", 0x0F);
+    vga_print(current_role == ROLE_ADMIN ? "GibranOS-CLI [ADMIN] $ " : "GibranOS-CLI [USER] $ ",
+              current_role == ROLE_ADMIN ? 0x0A : 0x0B);
 
     while (1) {
         int scroll = mouse_poll_scroll();
@@ -634,7 +958,8 @@ static void shell_task(void) {
             cmd_buffer[cmd_len] = '\0';
             cli_execute(cmd_buffer);
             cmd_len = 0;
-            vga_print("GibranOS-CLI $ ", 0x0F);
+            vga_print(current_role == ROLE_ADMIN ? "GibranOS-CLI [ADMIN] $ " : "GibranOS-CLI [USER] $ ",
+                      current_role == ROLE_ADMIN ? 0x0A : 0x0B);
         } else if (c == '\b') {
             if (cmd_len > 0) {
                 cmd_len--;
@@ -649,7 +974,6 @@ static void shell_task(void) {
     }
 }
 
-
 void kernel_main(void) {
     __asm__ volatile ("cli");
 
@@ -663,7 +987,6 @@ void kernel_main(void) {
 
     /* Inisialisasi scheduler dan proses */
     scheduler_init();
-    // process_test();
     process_init();
 
     /* Membuat dua worker dan satu thread CLI */
@@ -723,4 +1046,3 @@ void kernel_main(void) {
         __asm__ volatile ("hlt");
     }
 }
-
