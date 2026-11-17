@@ -3,10 +3,12 @@
 
 static tcb_t* thread_list = NULL;
 static tcb_t* current_scheduled_thread = NULL;
+static volatile uint32_t context_switch_count = 0;
 
 void scheduler_init(void) {
     thread_list = NULL;
     current_scheduled_thread = NULL;
+    context_switch_count = 0;
 }
 
 void scheduler_add_thread(tcb_t* thread) {
@@ -70,6 +72,7 @@ tcb_t* scheduler_tick(void) {
         current_scheduled_thread->state == PROCESS_RUNNING) {
 
         current_scheduled_thread->time_slice++;
+        current_scheduled_thread->total_ticks++;
 
         if (current_scheduled_thread->time_slice < SCHEDULER_QUANTUM) {
             return current_scheduled_thread;
@@ -82,6 +85,10 @@ tcb_t* scheduler_tick(void) {
     tcb_t* next = scheduler_pick_next();
 
     if (next != NULL) {
+        if (next != current_scheduled_thread) {
+            context_switch_count++;
+            next->switches++;
+        }
         current_scheduled_thread = next;
         next->time_slice = 0;
 
@@ -94,4 +101,8 @@ tcb_t* scheduler_tick(void) {
 
 tcb_t* scheduler_get_current(void) {
     return current_scheduled_thread;
+}
+
+uint32_t scheduler_get_switch_count(void) {
+    return context_switch_count;
 }

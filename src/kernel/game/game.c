@@ -1,5 +1,9 @@
 #include "kernel/game/game.h"
 #include "drivers/keyboard.h"
+#include "arch/i386/timer.h"
+#include "kernel/02_Pengelolaan_Proses_Thread/process.h"
+#include "kernel/03_Penjadwalan_CPU_Preemptive/scheduler.h"
+#include "kernel/04_Sinkronisasi/mutex.h"
 #include "kernel/06_Alokator_Memori_Dinamis/heap.h"
 #include "kernel/07_Virtual_File_System/vfs.h"
 
@@ -9,13 +13,13 @@
 #define WORD_MAX_LEN  20
 #define NAME_MAX_LEN  16
 
-/* Batas kolom jendela kiri (Win 1: Game) dan jendela kanan (Win 2 & 3: Memori) */
+/* Batas kolom jendela kiri (Win 1: Game) dan jendela kanan (Win 2, 3, 4) */
 #define WIN1_LEFT     0
 #define WIN1_RIGHT    48
 #define WIN2_LEFT     49
 #define WIN2_RIGHT    79
 
-#define MAX_MEM_LOGS  7
+#define MAX_MEM_LOGS  4
 #define LOG_TEXT_LEN  28
 #define MAX_EXTRA_BLK 12
 #define MAX_KILL_LOGS 32
@@ -27,15 +31,15 @@ static volatile uint16_t* const vga_mem = (volatile uint16_t*)0xB8000;
 static volatile uint16_t arena_buf[ARENA_HEIGHT][ARENA_WIDTH];
 
 /* Karakter CP437 untuk UI Multi-Window */
-#define LINE_H  ((char)0xC4) /* ─ */
-#define LINE_V  ((char)0xB3) /* │ */
-#define BOX_TL  ((char)0xDA) /* ┌ */
-#define BOX_TR  ((char)0xBF) /* ┐ */
-#define BOX_BL  ((char)0xC0) /* └ */
-#define BOX_BR  ((char)0xD9) /* ┘ */
-#define SYM_HRT ((char)0x03) /* ♥ */
-#define SYM_UP  ((char)0x1E) /* ▲ */
-#define BAR_FULL ((char)0xDB) /* █ */
+#define LINE_H    ((char)0xC4) /* ─ */
+#define LINE_V    ((char)0xB3) /* │ */
+#define BOX_TL    ((char)0xDA) /* ┌ */
+#define BOX_TR    ((char)0xBF) /* ┐ */
+#define BOX_BL    ((char)0xC0) /* └ */
+#define BOX_BR    ((char)0xD9) /* ┘ */
+#define SYM_HRT   ((char)0x03) /* ♥ */
+#define SYM_UP    ((char)0x1E) /* ▲ */
+#define BAR_FULL  ((char)0xDB) /* █ */
 #define BAR_EMPTY ((char)0xB0) /* ░ */
 
 typedef enum {
@@ -79,7 +83,7 @@ typedef struct {
     uint8_t telemetry[480];
 } kill_record_t;
 
-/* State pointer alokasi dinamis untuk dipantau di Window 2 & 3 */
+/* State pointer alokasi dinamis */
 static size_t baseline_used_bytes = 0;
 static game_session_t*   g_session   = NULL;
 static game_vfs_buf_t*   g_vfs_buf   = NULL;
@@ -93,10 +97,43 @@ static int               g_kill_log_count = 0;
 static void*             g_extra_blocks[MAX_EXTRA_BLK];
 static int               g_extra_count = 0;
 
-/* Ring buffer untuk log alokasi/dealokasi (Window 3) */
+/* Ring buffer untuk log alokasi/thread (Window 4) */
 static char    mem_log_lines[MAX_MEM_LOGS][LOG_TEXT_LEN];
 static uint8_t mem_log_colors[MAX_MEM_LOGS];
 static int     mem_log_count = 0;
+
+/*
+ * ============================================================================
+ * ARSITEKTUR MULTI-WINDOW MULTI-THREAD SEJATI (TANPA VARIABEL GIMMICK)
+ * ============================================================================
+ * Setiap jendela digambar dan dikelola oleh thread-nya sendiri ketika mendapat
+ * jatah CPU (5 tick) dari Preemptive Round Robin Scheduler:
+ * - Thread Shell     : Menggambar & mengelola [WIN 1: GAME] (Kolom 0..48)
+ * - Thread HeapMon   : Menggambar & mengelola [WIN 2], [WIN 3], [WIN 4] (Kolom 49..79)
+ * - Thread MonsterAI : Menggerakkan fisika monster & timer permainan di latar
+ */
+static mutex_t  g_game_mutex;
+static pcb_t*   g_monster_proc = NULL;
+static pcb_t*   g_heapmon_proc = NULL;
+
+static volatile int      g_threads_running = 0;
+static volatile int      g_battle_active   = 0;
+static volatile int      g_win1_dirty      = 0;
+
+static volatile uint32_t g_score               = 0;
+static volatile uint32_t g_time_left           = 60;
+static volatile int      g_hp                  = 3;
+static volatile int      g_monster_y           = 0;
+static volatile uint32_t g_step_seconds        = 4;
+static volatile uint32_t g_points_per_word     = 10;
+static volatile int      g_word_count          = 1;
+static volatile int      g_current_word_idx    = 0;
+static volatile int      g_laser_active        = 0;
+static volatile uint32_t g_laser_hold          = 0;
+static char              g_typed_buf[WORD_MAX_LEN];
+static volatile size_t   g_typed_len           = 0;
+static const char*       g_status_msg          = "Siap!";
+static volatile uint8_t  g_status_color        = 0x0A;
 
 static inline void game_outb(uint16_t port, uint8_t val) {
     __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
@@ -131,11 +168,21 @@ static void hide_vga_cursor(void) {
     game_outb(0x3D5, (uint8_t)((pos >> 8) & 0xFF));
 }
 
-static void arena_clear(uint8_t color) {
+/* Membersihkan hanya area persegi panjang milik suatu Window */
+static void arena_clear_rect(int r1, int c1, int r2, int c2, uint8_t color) {
     uint16_t blank = ((uint16_t)color << 8) | ' ';
-    for (int r = 0; r < ARENA_HEIGHT; r++) {
-        for (int c = 0; c < ARENA_WIDTH; c++) {
+    for (int r = r1; r <= r2 && r < ARENA_HEIGHT; r++) {
+        for (int c = c1; c <= c2 && c < ARENA_WIDTH; c++) {
             arena_buf[r][c] = blank;
+        }
+    }
+}
+
+/* Menyalin hanya area persegi panjang milik Window tersebut ke layar VGA 0xB8000 */
+static void arena_present_rect(int r1, int c1, int r2, int c2) {
+    for (int r = r1; r <= r2 && r < ARENA_HEIGHT; r++) {
+        for (int c = c1; c <= c2 && c < ARENA_WIDTH; c++) {
+            vga_mem[r * ARENA_WIDTH + c] = arena_buf[r][c];
         }
     }
 }
@@ -197,14 +244,6 @@ static void arena_box(int r1, int c1, int r2, int c2, uint8_t color) {
     arena_putc(r2, c2, BOX_BR, color);
 }
 
-static void arena_present(void) {
-    for (int r = 0; r < ARENA_HEIGHT; r++) {
-        for (int c = 0; c < ARENA_WIDTH; c++) {
-            vga_mem[r * ARENA_WIDTH + c] = arena_buf[r][c];
-        }
-    }
-}
-
 static size_t game_strlen(const char* s) {
     size_t len = 0;
     while (s[len] != '\0') len++;
@@ -236,16 +275,37 @@ static const char* diff_to_name(difficulty_t diff) {
     return "SULIT";
 }
 
-/* Mencatat aktivitas kmalloc / kfree ke Window 3 (Log Alokasi) */
+static const char* short_state_str(process_state_t st) {
+    switch (st) {
+        case PROCESS_NEW:        return "NEW ";
+        case PROCESS_READY:      return "RDY ";
+        case PROCESS_RUNNING:    return "RUN ";
+        case PROCESS_WAITING:    return "WAIT";
+        case PROCESS_TERMINATED: return "TERM";
+        default:                 return "UNK ";
+    }
+}
+
+static uint8_t state_color(process_state_t st) {
+    switch (st) {
+        case PROCESS_RUNNING:    return 0x0A; /* Hijau terang */
+        case PROCESS_READY:      return 0x0B; /* Cyan */
+        case PROCESS_WAITING:    return 0x0E; /* Kuning (WAITING / Tidak Dijadwalkan) */
+        case PROCESS_TERMINATED: return 0x0C; /* Merah */
+        default:                 return 0x07;
+    }
+}
+
+/* Mencatat aktivitas kmalloc / kfree / thread ke Window 4 */
 static void mem_log_push(char op, const char* tag, size_t bytes, uint8_t color) {
     char line[LOG_TEXT_LEN];
     int idx = 0;
 
-    line[idx++] = op; /* '+' atau '-' atau '!' */
+    line[idx++] = op;
     for (int i = 0; tag[i] != '\0' && idx < 17; i++) {
         line[idx++] = tag[i];
     }
-    while (idx < 17) {
+    while (idx < 17 && bytes > 0) {
         line[idx++] = ' ';
     }
 
@@ -286,7 +346,6 @@ static void mem_log_push(char op, const char* tag, size_t bytes, uint8_t color) 
     }
 }
 
-/* Wrapper kmalloc & kfree yang langsung mencatat ke log visual */
 static void* game_alloc_logged(size_t size, const char* label) {
     void* ptr = kmalloc(size);
     if (ptr != NULL) {
@@ -304,45 +363,36 @@ static void game_free_logged(void* ptr, size_t size, const char* label) {
     }
 }
 
-/* Fungsi untuk menambah/mengurangi beban memori uji secara interaktif (PGUP / PGDN) */
-static void handle_interactive_memory_key(char c, int* changed_out) {
-    if (c == KEY_PGUP) {
-        if (g_extra_count < MAX_EXTRA_BLK) {
-            void* blk = game_alloc_logged(4096, "alloc UjiHeap4K");
-            if (blk != NULL) {
-                g_extra_blocks[g_extra_count++] = blk;
-            }
-        } else {
-            mem_log_push('!', "Maks Blok Uji(12)", 0, 0x0C);
+static void spawn_new_monster(const char* word, uint32_t points) {
+    if (g_monster != NULL) {
+        game_free_logged(g_monster, sizeof(monster_entity_t), "free  Monster");
+        g_monster = NULL;
+    }
+    g_monster = (monster_entity_t*)game_alloc_logged(sizeof(monster_entity_t), "alloc Monster");
+    if (g_monster != NULL) {
+        size_t i = 0;
+        while (word[i] != '\0' && i < WORD_MAX_LEN - 1) {
+            g_monster->word[i] = word[i];
+            i++;
         }
-        if (changed_out) *changed_out = 1;
-    } else if (c == KEY_PGDN) {
-        if (g_extra_count > 0) {
-            g_extra_count--;
-            game_free_logged(g_extra_blocks[g_extra_count], 4096, "free  UjiHeap4K");
-            g_extra_blocks[g_extra_count] = NULL;
-        } else {
-            mem_log_push('!', "Blok Uji Kosong", 0, 0x08);
-        }
-        if (changed_out) *changed_out = 1;
+        g_monster->word[i] = '\0';
+        g_monster->y_pos = 0;
+        g_monster->points = points;
     }
 }
 
-/* Merender Top Bar, Window 2 (Live Heap Monitor), Window 3 (Log Alokasi), dan Bottom Bar */
-static void render_multi_window_chrome(int active_win) {
-    /* Baris 0: Judul Desktop Multi-Window */
-    for (int c = 0; c < ARENA_WIDTH; c++) {
-        arena_putc(0, c, ' ', 0x1F);
-    }
-    arena_puts(0, 1, "GIBRANOS MULTI-WINDOW", 0x1E);
-    arena_puts(0, 24, "| Win1: Game Typing Defense | Win2-3: Live Heap Monitor", 0x1F);
+/*
+ * ============================================================================
+ * FUNGSI RENDER KHUSUS JENDELA KANAN (WIN 2, WIN 3, WIN 4)
+ * ============================================================================
+ * Hanya menulis ke kolom 49..79 (tidak menyentuh kolom 0..48 milik Window 1).
+ * Dipanggil langsung oleh Thread HeapMon saat mendapatkan giliran Round Robin!
+ */
+static void render_right_windows_only(void) {
+    arena_clear_rect(1, WIN2_LEFT, 23, WIN2_RIGHT, 0x07);
 
-    /* Kerangka Window 1 (Kiri: Game) */
-    arena_box(1, WIN1_LEFT, 23, WIN1_RIGHT, (active_win == 1) ? 0x0B : 0x08);
-    arena_puts(1, 2, "[ WIN 1: GAME TYPING DEFENSE ]", 0x0B);
-
-    /* Kerangka Window 2 (Kanan Atas: Heap Memory Monitor) */
-    arena_box(1, WIN2_LEFT, 14, WIN2_RIGHT, 0x0E);
+    /* WINDOW 2: HEAP MEMORY MONITOR (Baris 1..11, Kolom 49..79) */
+    arena_box(1, WIN2_LEFT, 11, WIN2_RIGHT, 0x0E);
     arena_puts(1, 51, "[ WIN 2: HEAP MONITOR ]", 0x0E);
 
     size_t total_mem = HEAP_SIZE;
@@ -350,7 +400,6 @@ static void render_multi_window_chrome(int active_win) {
     size_t used_mem  = total_mem - free_mem;
     uint32_t pct     = (uint32_t)((used_mem * 100u) / total_mem);
 
-    /* Hitung jumlah blok aktif dan kosong dari linked list heap */
     uint32_t used_blocks = 0;
     uint32_t free_blocks = 0;
     heap_block_t* curr = heap_get_head();
@@ -360,58 +409,51 @@ static void render_multi_window_chrome(int active_win) {
         curr = curr->next;
     }
 
-    arena_puts(2, 51, "Total Heap : ", 0x07);
-    int len = arena_put_uint(2, 64, (uint32_t)total_mem, 0x0F);
-    arena_puts(2, 64 + len, " B", 0x07);
+    arena_puts(2, 51, "Pakai:", 0x07);
+    int len = arena_put_uint(2, 57, (uint32_t)used_mem, 0x0E);
+    arena_puts(2, 57 + len, "B", 0x0E);
+    arena_puts(2, 65, "Free:", 0x07);
+    len = arena_put_uint(2, 70, (uint32_t)free_mem, 0x0A);
+    arena_puts(2, 70 + len, "B", 0x0A);
 
-    arena_puts(3, 51, "Terpakai   : ", 0x07);
-    len = arena_put_uint(3, 64, (uint32_t)used_mem, 0x0E);
-    arena_puts(3, 64 + len, " B", 0x0E);
-
-    arena_puts(4, 51, "Tersedia   : ", 0x07);
-    len = arena_put_uint(4, 64, (uint32_t)free_mem, 0x0A);
-    arena_puts(4, 64 + len, " B", 0x0A);
-
-    arena_puts(5, 51, "Delta Game : ", 0x07);
+    arena_puts(3, 51, "Delta:", 0x07);
     if (used_mem >= baseline_used_bytes) {
         size_t delta = used_mem - baseline_used_bytes;
-        arena_putc(5, 64, '+', (delta > 0) ? 0x0A : 0x08);
-        len = arena_put_uint(5, 65, (uint32_t)delta, (delta > 0) ? 0x0A : 0x08);
-        arena_puts(5, 65 + len, " B", (delta > 0) ? 0x0A : 0x08);
+        arena_putc(3, 57, '+', (delta > 0) ? 0x0A : 0x08);
+        len = arena_put_uint(3, 58, (uint32_t)delta, (delta > 0) ? 0x0A : 0x08);
+        arena_puts(3, 58 + len, "B", (delta > 0) ? 0x0A : 0x08);
     } else {
         size_t delta = baseline_used_bytes - used_mem;
-        arena_putc(5, 64, '-', 0x0E);
-        len = arena_put_uint(5, 65, (uint32_t)delta, 0x0E);
-        arena_puts(5, 65 + len, " B", 0x0E);
+        arena_putc(3, 57, '-', 0x0E);
+        len = arena_put_uint(3, 58, (uint32_t)delta, 0x0E);
+        arena_puts(3, 58 + len, "B", 0x0E);
     }
+    arena_puts(3, 66, "Blok:", 0x07);
+    len = arena_put_uint(3, 71, used_blocks, 0x0B);
+    arena_putc(3, 71 + len, '/', 0x08);
+    arena_put_uint(3, 72 + len, used_blocks + free_blocks, 0x07);
 
-    arena_puts(6, 51, "Blok Heap  : ", 0x07);
-    len = arena_put_uint(6, 64, used_blocks, 0x0B);
-    arena_puts(6, 64 + len, " isi/", 0x08);
-    len += 5 + arena_put_uint(6, 64 + len + 5, free_blocks, 0x07);
-    arena_puts(6, 64 + len, " free", 0x08);
-
-    /* Visual Bar Penggunaan Memori (16 segmen) */
-    arena_puts(7, 51, "Beban [", 0x07);
+    /* Visual Bar Penggunaan Memori */
+    arena_puts(4, 51, "Heap [", 0x07);
     uint32_t filled = (uint32_t)((used_mem * 16u) / total_mem);
     if (used_mem > 16 && filled == 0) filled = 1;
     if (filled > 16) filled = 16;
     uint8_t bar_col = (pct >= 75) ? 0x0C : ((pct >= 35) ? 0x0E : 0x0A);
     for (uint32_t b = 0; b < 16; b++) {
-        arena_putc(7, 58 + (int)b, (b < filled) ? BAR_FULL : BAR_EMPTY, (b < filled) ? bar_col : 0x08);
+        arena_putc(4, 57 + (int)b, (b < filled) ? BAR_FULL : BAR_EMPTY, (b < filled) ? bar_col : 0x08);
     }
-    arena_putc(7, 74, ']', 0x07);
-    len = arena_put_uint(7, 75, pct, 0x0F);
-    arena_putc(7, 75 + len, '%', 0x07);
+    arena_putc(4, 73, ']', 0x07);
+    len = arena_put_uint(4, 75, pct, 0x0F);
+    arena_putc(4, 75 + len, '%', 0x07);
 
-    /* Tabel Blok Heap Aktif */
-    arena_hline(8, WIN2_LEFT + 1, WIN2_RIGHT - 1, 0x08);
-    arena_puts(8, 51, " Peta Blok Heap (First-Fit) ", 0x0B);
+    /* Peta Blok Heap (Baris 5..10) */
+    arena_hline(5, WIN2_LEFT + 1, WIN2_RIGHT - 1, 0x08);
+    arena_puts(5, 51, " Peta Blok Heap (First-Fit) ", 0x0B);
 
     curr = heap_get_head();
-    int row = 9;
+    int row = 6;
     int idx = 1;
-    while (curr != NULL && row <= 13) {
+    while (curr != NULL && row <= 10) {
         arena_putc(row, 51, '#', 0x08);
         int ilen = arena_put_uint(row, 52, (uint32_t)idx, 0x07);
         arena_puts(row, 52 + ilen, curr->free ? " FREE " : " USED ", curr->free ? 0x08 : 0x0A);
@@ -430,7 +472,7 @@ static void render_multi_window_chrome(int active_win) {
             else if (curr->size >= 480)                 owner = "(KillLog)";
             arena_puts_lim(row, 67, owner, 0x0E, WIN2_RIGHT - 1);
         } else {
-            arena_puts_lim(row, 67, "(Tersedia)", 0x08, WIN2_RIGHT - 1);
+            arena_puts_lim(row, 67, "(Kosong)", 0x08, WIN2_RIGHT - 1);
         }
 
         curr = curr->next;
@@ -438,16 +480,197 @@ static void render_multi_window_chrome(int active_win) {
         idx++;
     }
 
-    /* Kerangka Window 3 (Kanan Bawah: Log Alokasi Dinamis) */
-    arena_box(15, WIN2_LEFT, 23, WIN2_RIGHT, 0x0A);
-    arena_puts(15, 51, "[ WIN 3: LOG KMALLOC/KFREE ]", 0x0A);
+    /* WINDOW 3: LIVE ROUND ROBIN SCHEDULER & THREADS (Baris 12..17, Kolom 49..79) */
+    arena_box(12, WIN2_LEFT, 17, WIN2_RIGHT, 0x0B);
+    arena_puts(12, 51, "[ WIN 3: ROUND ROBIN LIVE ]", 0x0B);
 
-    for (int i = 0; i < mem_log_count && i < MAX_MEM_LOGS; i++) {
-        arena_puts_lim(16 + i, 51, mem_log_lines[i], mem_log_colors[i], WIN2_RIGHT - 1);
+    arena_puts(13, 51, "CtxSwitch:", 0x07);
+    arena_put_uint(13, 61, scheduler_get_switch_count(), 0x0F);
+    arena_puts(13, 69, "Q:5 tick", 0x08);
+
+    int trow = 14;
+    for (uint32_t i = 0; i < MAX_PROCESSES && trow <= 16; i++) {
+        pcb_t* p = process_get_by_index(i);
+        if (p == NULL || p->main_thread == NULL) continue;
+
+        if (game_streq(p->name, "WorkerA") || game_streq(p->name, "WorkerB")) {
+            continue;
+        }
+
+        tcb_t* t = p->main_thread;
+        uint32_t quantum_ticks = t->switches * SCHEDULER_QUANTUM;
+        arena_putc(trow, 51, 'T', 0x08);
+        arena_put_uint(trow, 52, t->tid, 0x07);
+        arena_puts_lim(trow, 54, p->name, 0x0F, 62);
+        arena_puts(trow, 64, short_state_str(t->state), state_color(t->state));
+        int tlen = arena_put_uint(trow, 69, quantum_ticks, 0x0A);
+        arena_puts_lim(trow, 69 + tlen, "t", 0x08, WIN2_RIGHT - 1);
+        trow++;
     }
 
-    /* Baris 24: Status & Shortcut Multi-Window */
-    arena_puts(24, 1, "[ESC] Keluar/Free  [PGUP] +Alokasi 4KB  [PGDN] -Free 4KB  [ENTER] Pilih", 0x07);
+    /* WINDOW 4: LOG KMALLOC / KFREE / THREAD (Baris 18..23, Kolom 49..79) */
+    arena_box(18, WIN2_LEFT, 23, WIN2_RIGHT, 0x0A);
+    arena_puts(18, 51, "[ WIN 4: LOG MEM & THREAD ]", 0x0A);
+
+    for (int i = 0; i < mem_log_count && i < MAX_MEM_LOGS; i++) {
+        arena_puts_lim(19 + i, 51, mem_log_lines[i], mem_log_colors[i], WIN2_RIGHT - 1);
+    }
+
+    /* Salin HANYA kolom 49..79 ke memori VGA 0xB8000 */
+    arena_present_rect(1, WIN2_LEFT, 23, WIN2_RIGHT);
+}
+
+/* Render Baris Judul Atas (Row 0) & Baris Bantuan Bawah (Row 24) */
+static void render_top_bottom_bars(void) {
+    for (int c = 0; c < ARENA_WIDTH; c++) {
+        arena_putc(0, c, ' ', 0x1F);
+        arena_putc(24, c, ' ', 0x07);
+    }
+    arena_puts(0, 1, "GIBRANOS MULTI-WINDOW", 0x1E);
+    arena_puts(0, 23, "| Win1: Thread UI | Win2-4: Thread HeapMon | AI: Thread AI", 0x1F);
+    arena_puts(24, 1, "[ESC] Keluar  [TAB] Set WAITING/READY Thread AI  [PGUP/PGDN] +/-Heap 4KB", 0x07);
+    arena_present_rect(0, 0, 0, ARENA_WIDTH - 1);
+    arena_present_rect(24, 0, 24, ARENA_WIDTH - 1);
+}
+
+/*
+ * ============================================================================
+ * THREAD 2: MonsterAI (Murni dijadwalkan oleh Round Robin Scheduler)
+ * ============================================================================
+ * Tidak ada variabel pause buatan di sini! Jika thread ini diubah statusnya
+ * ke PROCESS_WAITING di TCB kernel, scheduler Round Robin otomatis tidak
+ * akan pernah masuk ke fungsi ini sampai statusnya dikembalikan ke PROCESS_READY.
+ */
+static void monster_ai_thread_entry(void) {
+    uint32_t last_sec_tick = timer_get_ticks();
+    uint32_t monster_sec_counter = 0;
+
+    while (g_threads_running) {
+        if (!g_battle_active) {
+            last_sec_tick = timer_get_ticks();
+            __asm__ volatile ("pause");
+            continue;
+        }
+
+        uint32_t now_tick = timer_get_ticks();
+        if (now_tick - last_sec_tick >= 100) {
+            last_sec_tick = now_tick;
+
+            mutex_lock(&g_game_mutex);
+
+            if (g_battle_active && g_hp > 0 && g_time_left > 0) {
+                g_time_left--;
+                monster_sec_counter++;
+
+                if (monster_sec_counter >= g_step_seconds) {
+                    monster_sec_counter = 0;
+                    g_monster_y++;
+
+                    if (g_monster_y > 7) {
+                        g_hp--;
+                        g_monster_y = 0;
+                        g_typed_len = 0;
+                        g_typed_buf[0] = '\0';
+                        g_current_word_idx = (g_current_word_idx + 1) % g_word_count;
+                        if (g_word_pool != NULL) {
+                            spawn_new_monster(g_word_pool->words[g_current_word_idx], g_points_per_word);
+                        }
+                        g_status_msg = "Benteng Kena!";
+                        g_status_color = 0x0C;
+                    } else if (!g_laser_active) {
+                        g_status_msg = "Monster Turun";
+                        g_status_color = (g_monster_y >= 5) ? 0x0C : 0x08;
+                    }
+                }
+
+                if (g_hp <= 0) {
+                    g_status_msg = "KALAH! [ENTER]";
+                    g_status_color = 0x0C;
+                } else if (g_time_left == 0) {
+                    g_status_msg = "MENANG! [ENTER]";
+                    g_status_color = 0x0A;
+                }
+
+                g_win1_dirty = 1;
+            }
+
+            mutex_unlock(&g_game_mutex);
+        }
+
+        __asm__ volatile ("pause");
+    }
+
+    tcb_t* self = process_get_current_thread();
+    if (self != NULL) {
+        process_set_state(self, PROCESS_TERMINATED);
+    }
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
+
+/*
+ * ============================================================================
+ * THREAD 3: HeapMon (Menggambar Window 2, 3, 4 setiap mendapat giliran CPU)
+ * ============================================================================
+ * Thread ini yang secara langsung menggambar jendela kanan (Kolom 49..79)
+ * ke layar VGA setiap kali Round Robin memberikan jatah 5 tick kepadanya.
+ */
+static void heap_mon_thread_entry(void) {
+    uint32_t last_switch_seen = 0;
+
+    while (g_threads_running) {
+        tcb_t* self = process_get_current_thread();
+        uint32_t cur_sw = (self != NULL) ? self->switches : 0;
+
+        if (cur_sw != last_switch_seen) {
+            last_switch_seen = cur_sw;
+
+            mutex_lock(&g_game_mutex);
+            render_right_windows_only();
+            mutex_unlock(&g_game_mutex);
+        }
+
+        __asm__ volatile ("pause");
+    }
+
+    tcb_t* self = process_get_current_thread();
+    if (self != NULL) {
+        process_set_state(self, PROCESS_TERMINATED);
+    }
+    while (1) {
+        __asm__ volatile ("hlt");
+    }
+}
+
+/* Fungsi untuk menambah/mengurangi beban memori uji secara interaktif (PGUP / PGDN) */
+static void handle_interactive_memory_key(char c, int* changed_out) {
+    if (c == KEY_PGUP) {
+        mutex_lock(&g_game_mutex);
+        if (g_extra_count < MAX_EXTRA_BLK) {
+            void* blk = game_alloc_logged(4096, "alloc UjiHeap4K");
+            if (blk != NULL) {
+                g_extra_blocks[g_extra_count++] = blk;
+            }
+        } else {
+            mem_log_push('!', "Maks Blok Uji(12)", 0, 0x0C);
+        }
+        render_right_windows_only();
+        mutex_unlock(&g_game_mutex);
+        if (changed_out) *changed_out = 1;
+    } else if (c == KEY_PGDN) {
+        mutex_lock(&g_game_mutex);
+        if (g_extra_count > 0) {
+            g_extra_count--;
+            game_free_logged(g_extra_blocks[g_extra_count], 4096, "free  UjiHeap4K");
+            g_extra_blocks[g_extra_count] = NULL;
+        } else {
+            mem_log_push('!', "Blok Uji Kosong", 0, 0x08);
+        }
+        render_right_windows_only();
+        mutex_unlock(&g_game_mutex);
+        if (changed_out) *changed_out = 1;
+    }
 }
 
 /* Format penyimpanan ke scores.txt: "<skor> - <nama> (<level>)" */
@@ -562,17 +785,18 @@ static int load_words_for_difficulty(difficulty_t diff) {
     return count;
 }
 
-/* Render Window 1 saat proses pemuatan (Loading Game) agar perubahan memori terlihat jelas */
-static void render_loading_stage(int step, const char* status_text) {
-    arena_clear(0x07);
-    render_multi_window_chrome(1);
+/* Render HANYA Window 1 (Kolom 0..48) saat proses pemuatan */
+static void render_loading_stage_win1(int step, const char* status_text) {
+    arena_clear_rect(1, WIN1_LEFT, 23, WIN1_RIGHT, 0x07);
+    arena_box(1, WIN1_LEFT, 23, WIN1_RIGHT, 0x0B);
+    arena_puts(1, 2, "[ WIN 1: GAME TYPING DEFENSE ]", 0x0B);
 
-    arena_puts(3, 8, "MEMUAT RESOURCE GAME KE HEAP", 0x0E);
+    arena_puts(3, 6, "MEMUAT RESOURCE & THREAD GAME", 0x0E);
     arena_hline(4, 2, WIN1_RIGHT - 2, 0x08);
 
-    arena_puts(6, 3, "Perhatikan [WIN 2] & [WIN 3] di kanan:", 0x07);
-    arena_puts(7, 3, "Setiap modul game dialokasikan dinamis", 0x08);
-    arena_puts(8, 3, "menggunakan kmalloc() pada Heap Kernel.", 0x08);
+    arena_puts(6, 3, "Perhatikan [WIN 2], [WIN 3], & [WIN 4]:", 0x07);
+    arena_puts(7, 3, "Jendela kanan digambar oleh Thread", 0x08);
+    arena_puts(8, 3, "HeapMon saat diberi giliran Round Robin.", 0x08);
 
     arena_puts(10, 3, (step >= 1) ? "[OK] 1. Session State     (736 B)" : "[..] 1. Session State     (736 B)",
                (step >= 1) ? 0x0A : 0x08);
@@ -580,10 +804,9 @@ static void render_loading_stage(int step, const char* status_text) {
                (step >= 2) ? 0x0A : 0x08);
     arena_puts(14, 3, (step >= 3) ? "[OK] 3. Kolam Kata Soal   (3200 B)" : "[..] 3. Kolam Kata Soal   (3200 B)",
                (step >= 3) ? 0x0A : 0x08);
-    arena_puts(16, 3, (step >= 4) ? "[OK] 4. Buffer Efek Arena (2048 B)" : "[..] 4. Buffer Efek Arena (2048 B)",
+    arena_puts(16, 3, (step >= 4) ? "[OK] 4. Thread MonsterAI & HeapMon" : "[..] 4. Thread MonsterAI & HeapMon",
                (step >= 4) ? 0x0A : 0x08);
 
-    /* Progress bar loading di Window 1 */
     arena_puts(19, 3, "Progres Muat: [", 0x07);
     for (int i = 0; i < 20; i++) {
         int filled = (step * 5);
@@ -592,26 +815,27 @@ static void render_loading_stage(int step, const char* status_text) {
     arena_putc(19, 38, ']', 0x07);
 
     arena_puts_lim(21, 3, status_text, (step >= 4) ? 0x0A : 0x0E, WIN1_RIGHT - 2);
-    arena_present();
+    arena_present_rect(1, WIN1_LEFT, 23, WIN1_RIGHT);
+    render_right_windows_only();
 }
 
-/* Render Menu Persiapan di dalam Window 1 */
+/* Render HANYA Window 1 (Kolom 0..48) saat di Menu Persiapan */
 static void render_setup_menu_win1(const char* player_name, difficulty_t diff, const char* high_record) {
-    arena_clear(0x07);
-    render_multi_window_chrome(1);
+    mutex_lock(&g_game_mutex);
+    arena_clear_rect(1, WIN1_LEFT, 23, WIN1_RIGHT, 0x07);
+    arena_box(1, WIN1_LEFT, 23, WIN1_RIGHT, 0x0B);
+    arena_puts(1, 2, "[ WIN 1: GAME TYPING DEFENSE ]", 0x0B);
 
     arena_puts(3, 11, "GIBRANOS TYPING DEFENSE", 0x0B);
     arena_hline(4, 2, WIN1_RIGHT - 2, 0x08);
 
-    /* Input Nama User */
     arena_puts(6, 3, "Nama Pemain :", 0x07);
     arena_puts(6, 17, "[ ", 0x08);
     arena_puts(6, 19, player_name, 0x0F);
     arena_putc(6, 19 + (int)game_strlen(player_name), '_', 0x0A);
     arena_puts(6, 36, "]", 0x08);
 
-    /* Pilihan Tingkat Kesulitan */
-    arena_puts(8, 3, "Kesulitan (Panah Atas/Bawah / TAB):", 0x07);
+    arena_puts(8, 3, "Kesulitan (Panah Atas/Bawah):", 0x07);
 
     arena_puts(10, 4, (diff == DIFF_EASY)   ? "> [MUDAH]  3-5 huruf | Lambat (4d)" : "  [MUDAH]  3-5 huruf | Lambat (4d)",
                (diff == DIFF_EASY)   ? 0x0A : 0x08);
@@ -625,17 +849,18 @@ static void render_setup_menu_win1(const char* player_name, difficulty_t diff, c
     arena_puts_lim(15, 15, high_record, 0x0B, WIN1_RIGHT - 2);
 
     arena_hline(17, 2, WIN1_RIGHT - 2, 0x08);
-    arena_puts(18, 3, "Simulasi Memori Langsung:", 0x0E);
-    arena_puts(19, 3, "Tekan [PGUP] alokasi +4KB ke Heap", 0x07);
-    arena_puts(20, 3, "Tekan [PGDN] bebaskan -4KB dari Heap", 0x07);
+    arena_puts(18, 3, "Kontrol Multi-Thread & Memori:", 0x0E);
+    arena_puts(19, 3, "[TAB]       Set WAITING/READY Thread AI", 0x07);
+    arena_puts(20, 3, "[PGUP/PGDN] Alokasi/Free +4KB Heap", 0x07);
 
     arena_puts(22, 3, "[ENTER] Mulai Main", 0x0A);
     arena_puts(22, 26, "[ESC] Keluar & Free", 0x0C);
 
-    arena_present();
+    arena_present_rect(1, WIN1_LEFT, 23, WIN1_RIGHT);
+    mutex_unlock(&g_game_mutex);
 }
 
-/* Render Arena Pertempuran di dalam Window 1 + Update Live Memory di Window 2 & 3 */
+/* Render HANYA Window 1 (Kolom 0..48) saat di Arena Pertempuran */
 static void render_arena_win1(
     const char* player_name,
     difficulty_t diff,
@@ -650,10 +875,15 @@ static void render_arena_win1(
     const char* status_msg,
     uint8_t status_color
 ) {
-    arena_clear(0x07);
-    render_multi_window_chrome(1);
+    mutex_lock(&g_game_mutex);
+    arena_clear_rect(1, WIN1_LEFT, 23, WIN1_RIGHT, 0x07);
+    arena_box(1, WIN1_LEFT, 23, WIN1_RIGHT, 0x0B);
+    arena_puts(1, 2, "[ WIN 1: GAME TYPING DEFENSE ]", 0x0B);
 
-    /* Baris Info Arena (Row 2 & 3 di dalam Window 1) */
+    int ai_is_waiting = (g_monster_proc != NULL &&
+                         g_monster_proc->main_thread != NULL &&
+                         g_monster_proc->main_thread->state == PROCESS_WAITING);
+
     arena_puts(2, 2, "USER:", 0x08);
     arena_puts_lim(2, 7, player_name, 0x0F, 18);
 
@@ -673,13 +903,12 @@ static void render_arena_win1(
         arena_putc(3, 18 + i, SYM_HRT, (i < hp) ? 0x0C : 0x08);
     }
 
-    arena_puts(3, 24, "KILL LOG:", 0x08);
-    int klen = arena_put_uint(3, 33, (uint32_t)g_kill_log_count, 0x0E);
-    arena_puts(3, 33 + klen, " blok", 0x08);
+    arena_puts(3, 23, "THREAD AI:", 0x08);
+    arena_puts(3, 33, ai_is_waiting ? "WAITING (SKIP)" : "AKTIF DI RR",
+               ai_is_waiting ? 0x0E : 0x0A);
 
     arena_hline(4, 1, WIN1_RIGHT - 1, 0x08);
 
-    /* Area Pertempuran (Rows 5..16, titik tengah kolom = 24) */
     int m_row = 5 + monster_y;
     if (m_row > 12) m_row = 12;
 
@@ -690,12 +919,11 @@ static void render_arena_win1(
         }
     }
 
-    uint8_t m_color = (monster_y >= 6) ? 0x0C : ((monster_y >= 3) ? 0x0E : 0x0A);
+    uint8_t m_color = ai_is_waiting ? 0x08 : ((monster_y >= 6) ? 0x0C : ((monster_y >= 3) ? 0x0E : 0x0A));
     arena_puts(m_row,     20, " /\\_/\\ ", m_color);
-    arena_puts(m_row + 1, 20, "( o.o )", m_color);
+    arena_puts(m_row + 1, 20, ai_is_waiting ? "( -.- )" : "( o.o )", m_color);
     arena_puts(m_row + 2, 20, " > ^ < ", m_color);
 
-    /* Benteng & Pahlawan (Row 16-17) */
     arena_hline(16, 4, WIN1_RIGHT - 4, 0x08);
     arena_puts(16, 21, "[ ", 0x08);
     arena_putc(16, 23, SYM_UP, laser_active ? 0x0E : 0x0B);
@@ -705,7 +933,6 @@ static void render_arena_win1(
     arena_puts_lim(17, 2, status_msg, status_color, 20);
     arena_hline(18, 1, WIN1_RIGHT - 1, 0x08);
 
-    /* Area Ketikan di Window 1 (Rows 19..22) */
     arena_puts(19, 2, "TARGET :", 0x07);
     size_t t_len = game_strlen(target_word);
     size_t u_len = game_strlen(typed_buf);
@@ -733,11 +960,41 @@ static void render_arena_win1(
     arena_puts(22, 2, "Rekor:", 0x08);
     arena_puts_lim(22, 9, high_record, 0x07, WIN1_RIGHT - 2);
 
-    arena_present();
+    arena_present_rect(1, WIN1_LEFT, 23, WIN1_RIGHT);
+    mutex_unlock(&g_game_mutex);
+}
+
+/*
+ * Mengubah status asli TCB milik Thread MonsterAI di kernel:
+ * - PROCESS_WAITING : scheduler_pick_next() di scheduler.c melewati thread ini
+ * - PROCESS_READY   : scheduler_pick_next() kembali menjadwalkan thread ini
+ */
+static void toggle_monster_ai_thread_state(void) {
+    if (g_monster_proc == NULL || g_monster_proc->main_thread == NULL) {
+        return;
+    }
+
+    mutex_lock(&g_game_mutex);
+    tcb_t* ai_tcb = g_monster_proc->main_thread;
+    if (ai_tcb->state != PROCESS_WAITING) {
+        ai_tcb->waiting_on = NULL;
+        process_set_state(ai_tcb, PROCESS_WAITING);
+        mem_log_push('!', "MonsterAI->WAITING", 0, 0x0E);
+        g_status_msg = "AI State: WAITING";
+        g_status_color = 0x0E;
+    } else {
+        process_set_state(ai_tcb, PROCESS_READY);
+        mem_log_push('*', "MonsterAI->READY", 0, 0x0A);
+        g_status_msg = "AI State: READY";
+        g_status_color = 0x0A;
+    }
+    render_right_windows_only();
+    mutex_unlock(&g_game_mutex);
 }
 
 /* Membebaskan seluruh log kill & monster saat ronde berakhir */
 static void free_round_allocations(void) {
+    mutex_lock(&g_game_mutex);
     if (g_monster != NULL) {
         game_free_logged(g_monster, sizeof(monster_entity_t), "free  Monster");
         g_monster = NULL;
@@ -749,12 +1006,14 @@ static void free_round_allocations(void) {
         }
     }
     g_kill_log_count = 0;
+    mutex_unlock(&g_game_mutex);
 }
 
 /* Membebaskan seluruh memori game saat keluar ke CLI */
 static void free_all_game_allocations(void) {
     free_round_allocations();
 
+    mutex_lock(&g_game_mutex);
     while (g_extra_count > 0) {
         g_extra_count--;
         game_free_logged(g_extra_blocks[g_extra_count], 4096, "free  UjiHeap4K");
@@ -777,25 +1036,7 @@ static void free_all_game_allocations(void) {
         game_free_logged(g_session, sizeof(game_session_t), "free  Session");
         g_session = NULL;
     }
-}
-
-/* Mengalokasikan objek monster baru di Heap untuk kata soal berikutnya */
-static void spawn_new_monster(const char* word, uint32_t points) {
-    if (g_monster != NULL) {
-        game_free_logged(g_monster, sizeof(monster_entity_t), "free  Monster");
-        g_monster = NULL;
-    }
-    g_monster = (monster_entity_t*)game_alloc_logged(sizeof(monster_entity_t), "alloc Monster");
-    if (g_monster != NULL) {
-        size_t i = 0;
-        while (word[i] != '\0' && i < WORD_MAX_LEN - 1) {
-            g_monster->word[i] = word[i];
-            i++;
-        }
-        g_monster->word[i] = '\0';
-        g_monster->y_pos = 0;
-        g_monster->points = points;
-    }
+    mutex_unlock(&g_game_mutex);
 }
 
 void game_start(void) {
@@ -803,35 +1044,41 @@ void game_start(void) {
     mem_log_count = 0;
     g_extra_count = 0;
     g_kill_log_count = 0;
+    g_battle_active = 0;
+    g_threads_running = 1;
 
+    mutex_init(&g_game_mutex);
     hide_vga_cursor();
+    render_top_bottom_bars();
 
-    /*
-     * TAHAP PEMUATAN MULTI-WINDOW:
-     * Menampilkan alokasi bertahap agar pengguna dapat mengamati
-     * kenaikan penggunaan memori secara langsung pada Window 2 & Window 3.
-     */
     mem_log_push('*', "Mulai Muat Game", 0, 0x0B);
-    render_loading_stage(0, "Kondisi awal Heap sebelum alokasi...");
+    render_loading_stage_win1(0, "Kondisi awal Heap & Scheduler...");
     delay_io_cycles(250000);
 
     g_session = (game_session_t*)game_alloc_logged(sizeof(game_session_t), "alloc Session");
-    render_loading_stage(1, "Mengalokasikan Session State di Heap...");
+    render_loading_stage_win1(1, "kmalloc(Session State) berhasil...");
     delay_io_cycles(250000);
 
     g_vfs_buf = (game_vfs_buf_t*)game_alloc_logged(sizeof(game_vfs_buf_t), "alloc VFSBuf");
-    render_loading_stage(2, "Mengalokasikan Buffer VFS di Heap...");
+    render_loading_stage_win1(2, "kmalloc(Buffer VFS) berhasil...");
     delay_io_cycles(250000);
 
     g_word_pool = (game_word_pool_t*)game_alloc_logged(sizeof(game_word_pool_t), "alloc WordPool");
-    render_loading_stage(3, "Mengalokasikan Kolam Kata di Heap...");
+    g_arena_fx  = (uint8_t*)game_alloc_logged(2048, "alloc SpriteFX");
+    render_loading_stage_win1(3, "kmalloc(WordPool & FX) berhasil...");
     delay_io_cycles(250000);
 
-    g_arena_fx = (uint8_t*)game_alloc_logged(2048, "alloc SpriteFX");
-    render_loading_stage(4, "Semua modul siap! Tekan ENTER / tunggu...");
+    /* Buat 2 Kernel Thread mandiri yang dijadwalkan secara Round Robin */
+    g_monster_proc = process_create("MonsterAI", monster_ai_thread_entry, 1, PRIVILEGE_KERNEL);
+    g_heapmon_proc = process_create("HeapMon", heap_mon_thread_entry, 1, PRIVILEGE_KERNEL);
+    mem_log_push('*', "Thread AI & Mon RDY", 0, 0x0B);
+    render_loading_stage_win1(4, "Thread MonsterAI & HeapMon aktif di RR!");
     delay_io_cycles(350000);
 
     if (g_session == NULL || g_vfs_buf == NULL || g_word_pool == NULL) {
+        g_threads_running = 0;
+        process_terminate(g_monster_proc);
+        process_terminate(g_heapmon_proc);
         free_all_game_allocations();
         vga_render();
         vga_print("[GAME] Gagal memuat game: Out of Memory pada Heap.\n", 0x0C);
@@ -852,7 +1099,12 @@ void game_start(void) {
     }
     g_session->high_score = str_to_uint(g_session->score_record);
 
-    /* Loop Menu Persiapan di Window 1 (Window 2 & 3 tetap live) */
+    /*
+     * Loop Menu Persiapan:
+     * Perhatikan bahwa loop ini HANYA menggambar Window 1 saat ada tombol ditekan,
+     * sedangkan Window 2, 3, 4 di sebelah kanan terus ter-update sendiri karena
+     * digambar langsung oleh Thread HeapMon setiap 5 tick Round Robin!
+     */
     while (1) {
         render_setup_menu_win1(g_session->player_name, g_session->diff, g_session->score_record);
 
@@ -867,27 +1119,34 @@ void game_start(void) {
             int mem_changed = 0;
             handle_interactive_memory_key(c, &mem_changed);
             if (mem_changed) {
-                render_setup_menu_win1(g_session->player_name, g_session->diff, g_session->score_record);
                 continue;
             }
 
-            if (c == 27) { /* ESC -> Bebaskan seluruh memori & kembali ke CLI */
+            if (c == '\t') {
+                toggle_monster_ai_thread_state();
+                continue;
+            }
+
+            if (c == 27) {
+                g_battle_active = 0;
+                g_threads_running = 0;
+                process_terminate(g_monster_proc);
+                process_terminate(g_heapmon_proc);
+                mem_log_push('-', "Thread AI/Mon TERM", 0, 0x0C);
                 free_all_game_allocations();
-                render_loading_stage(0, "Membebaskan seluruh memori Heap (kfree)...");
+                render_loading_stage_win1(0, "Thread TERMINATED & Heap di-kfree...");
                 delay_io_cycles(250000);
                 vga_render();
-                vga_print("[GAME] Keluar dari Multi-Window Game. Seluruh alokasi Heap telah di-kfree.\n", 0x0A);
+                vga_print("[GAME] Keluar: Thread MonsterAI & HeapMon -> TERMINATED, Heap di-kfree.\n", 0x0A);
                 return;
             } else if (c == KEY_UP) {
                 if (g_session->diff > DIFF_EASY) {
                     g_session->diff = (difficulty_t)(g_session->diff - 1);
                 }
                 render_setup_menu_win1(g_session->player_name, g_session->diff, g_session->score_record);
-            } else if (c == KEY_DOWN || c == '\t') {
+            } else if (c == KEY_DOWN) {
                 if (g_session->diff < DIFF_HARD) {
                     g_session->diff = (difficulty_t)(g_session->diff + 1);
-                } else if (c == '\t') {
-                    g_session->diff = DIFF_EASY;
                 }
                 render_setup_menu_win1(g_session->player_name, g_session->diff, g_session->score_record);
             } else if (c == '\b') {
@@ -918,176 +1177,155 @@ void game_start(void) {
 
         if (!start_game) break;
 
-        int word_count = load_words_for_difficulty(g_session->diff);
-        if (word_count <= 0) {
+        mutex_lock(&g_game_mutex);
+
+        int wcount = load_words_for_difficulty(g_session->diff);
+        if (wcount <= 0) {
             const char* fallback = "kernel";
             for (int i = 0; i < 7; i++) g_word_pool->words[0][i] = fallback[i];
-            word_count = 1;
+            wcount = 1;
         }
+        g_word_count = wcount;
 
         difficulty_t diff = g_session->diff;
-        uint32_t step_seconds    = (diff == DIFF_EASY) ? 4 : ((diff == DIFF_MEDIUM) ? 2 : 1);
-        int pushback_steps       = (diff == DIFF_EASY) ? 3 : 2;
-        uint32_t points_per_word = (diff == DIFF_EASY) ? 10 : ((diff == DIFF_MEDIUM) ? 15 : 25);
+        g_step_seconds    = (diff == DIFF_EASY) ? 4 : ((diff == DIFF_MEDIUM) ? 2 : 1);
+        int pushback_steps = (diff == DIFF_EASY) ? 3 : 2;
+        g_points_per_word = (diff == DIFF_EASY) ? 10 : ((diff == DIFF_MEDIUM) ? 15 : 25);
 
-        uint32_t score = 0;
-        uint32_t time_left = 60;
-        int hp = 3;
-        int monster_y = 0;
-        uint32_t rng_state = (uint32_t)rtc_read_second() * 17u + 3u;
-        int current_word_idx = (int)(rng_state % (uint32_t)word_count);
-        int laser_active = 0;
-        uint32_t laser_hold = 0;
-        char typed_buf[WORD_MAX_LEN];
-        size_t typed_len = 0;
-        typed_buf[0] = '\0';
+        g_score = 0;
+        g_time_left = 60;
+        g_hp = 3;
+        g_monster_y = 0;
+        uint32_t rng_state = ((uint32_t)rtc_read_second() + timer_get_ticks()) * 17u + 3u;
+        g_current_word_idx = (int)(rng_state % (uint32_t)g_word_count);
+        g_laser_active = 0;
+        g_laser_hold = 0;
+        g_typed_len = 0;
+        g_typed_buf[0] = '\0';
 
-        /* Alokasi entitas monster pertama di Heap */
-        spawn_new_monster(g_word_pool->words[current_word_idx], points_per_word);
+        if (g_monster_proc != NULL && g_monster_proc->main_thread != NULL &&
+            g_monster_proc->main_thread->state == PROCESS_WAITING) {
+            process_set_state(g_monster_proc->main_thread, PROCESS_READY);
+        }
 
-        const char* status_msg = "Monster Spawn!";
-        uint8_t status_color = 0x0A;
+        spawn_new_monster(g_word_pool->words[g_current_word_idx], g_points_per_word);
+        g_status_msg = "Monster Spawn!";
+        g_status_color = 0x0A;
+        g_battle_active = 1;
+        g_win1_dirty = 0;
+
+        mutex_unlock(&g_game_mutex);
 
         render_arena_win1(
-            g_session->player_name, diff, g_word_pool->words[current_word_idx], typed_buf,
-            score, g_session->score_record, time_left, hp, monster_y, laser_active,
-            status_msg, status_color
+            g_session->player_name, diff, g_word_pool->words[g_current_word_idx], g_typed_buf,
+            g_score, g_session->score_record, g_time_left, g_hp, g_monster_y, g_laser_active,
+            g_status_msg, g_status_color
         );
 
-        uint8_t last_rtc_sec = rtc_read_second();
-        uint32_t monster_sec_counter = 0;
-
-        /* Loop Arena Pertempuran */
         while (1) {
             char c = keyboard_poll_char();
-            int need_redraw = 0;
+            int local_redraw = 0;
 
-            if (c == 27) { /* ESC -> Bebaskan memori ronde & kembali ke Menu */
+            if (c == 27) {
+                g_battle_active = 0;
                 free_round_allocations();
                 break;
             }
 
-            handle_interactive_memory_key(c, &need_redraw);
+            if (c == '\t') {
+                toggle_monster_ai_thread_state();
+                local_redraw = 1;
+            }
 
-            if (hp > 0 && time_left > 0) {
+            handle_interactive_memory_key(c, &local_redraw);
+
+            if (g_hp > 0 && g_time_left > 0) {
                 if (c == '\b') {
-                    if (typed_len > 0) {
-                        typed_len--;
-                        typed_buf[typed_len] = '\0';
-                        need_redraw = 1;
+                    mutex_lock(&g_game_mutex);
+                    if (g_typed_len > 0) {
+                        g_typed_len--;
+                        g_typed_buf[g_typed_len] = '\0';
+                        local_redraw = 1;
                     }
+                    mutex_unlock(&g_game_mutex);
                 } else if (c >= ' ' && c <= '~' && c != ' ') {
-                    rng_state = rng_state * 1103515245u + 12345u + (uint32_t)c;
-                    if (typed_len < WORD_MAX_LEN - 1) {
-                        typed_buf[typed_len++] = c;
-                        typed_buf[typed_len] = '\0';
-                        need_redraw = 1;
+                    mutex_lock(&g_game_mutex);
+
+                    rng_state = rng_state * 1103515245u + 12345u + (uint32_t)c + timer_get_ticks();
+                    if (g_typed_len < WORD_MAX_LEN - 1) {
+                        g_typed_buf[g_typed_len++] = c;
+                        g_typed_buf[g_typed_len] = '\0';
+                        local_redraw = 1;
                     }
 
-                    /* Jika kata target selesai diketik dengan benar */
-                    if (game_streq(typed_buf, g_word_pool->words[current_word_idx])) {
-                        score += points_per_word;
-                        if (score > g_session->high_score) {
-                            g_session->high_score = score;
+                    if (game_streq(g_typed_buf, g_word_pool->words[g_current_word_idx])) {
+                        g_score += g_points_per_word;
+                        if (g_score > g_session->high_score) {
+                            g_session->high_score = g_score;
                             save_highscore_to_vfs(g_session->high_score, g_session->player_name, diff);
                         }
 
-                        /* Alokasikan Kill Log baru di Heap agar perubahan memori terlihat saat bermain */
                         if (g_kill_log_count < MAX_KILL_LOGS) {
                             kill_record_t* rec = (kill_record_t*)game_alloc_logged(
                                 sizeof(kill_record_t), "alloc KillLog"
                             );
                             if (rec != NULL) {
-                                rec->score_after = score;
+                                rec->score_after = g_score;
                                 g_kill_logs[g_kill_log_count++] = rec;
                             }
                         }
 
-                        if (monster_y >= pushback_steps) {
-                            monster_y -= pushback_steps;
+                        if (g_monster_y >= pushback_steps) {
+                            g_monster_y -= pushback_steps;
                         } else {
-                            monster_y = 0;
+                            g_monster_y = 0;
                         }
-                        monster_sec_counter = 0;
-                        laser_active = 1;
-                        laser_hold = 400;
-                        status_msg = "Telak! +KillLog";
-                        status_color = 0x0A;
 
-                        current_word_idx = (int)((rng_state >> 4) % (uint32_t)word_count);
-                        spawn_new_monster(g_word_pool->words[current_word_idx], points_per_word);
+                        g_laser_active = 1;
+                        g_laser_hold = 400;
+                        g_status_msg = "Telak! +KillLog";
+                        g_status_color = 0x0A;
 
-                        typed_len = 0;
-                        typed_buf[0] = '\0';
-                        need_redraw = 1;
+                        g_current_word_idx = (int)((rng_state >> 4) % (uint32_t)g_word_count);
+                        spawn_new_monster(g_word_pool->words[g_current_word_idx], g_points_per_word);
+
+                        g_typed_len = 0;
+                        g_typed_buf[0] = '\0';
+                        local_redraw = 1;
                     }
+
+                    mutex_unlock(&g_game_mutex);
                 }
 
                 delay_io_cycles(400);
 
-                if (laser_hold > 0) {
-                    laser_hold--;
-                    if (laser_hold == 0) {
-                        laser_active = 0;
-                        need_redraw = 1;
+                if (g_laser_hold > 0) {
+                    g_laser_hold--;
+                    if (g_laser_hold == 0) {
+                        g_laser_active = 0;
+                        local_redraw = 1;
                     }
                 }
 
-                uint8_t cur_sec = rtc_read_second();
-                if (cur_sec != 0xFF && cur_sec != last_rtc_sec) {
-                    last_rtc_sec = cur_sec;
-
-                    if (time_left > 0) {
-                        time_left--;
-                    }
-
-                    monster_sec_counter++;
-                    if (monster_sec_counter >= step_seconds) {
-                        monster_sec_counter = 0;
-                        monster_y++;
-
-                        if (monster_y > 7) {
-                            hp--;
-                            monster_y = 0;
-                            typed_len = 0;
-                            typed_buf[0] = '\0';
-                            current_word_idx = (current_word_idx + 1) % word_count;
-                            spawn_new_monster(g_word_pool->words[current_word_idx], points_per_word);
-                            status_msg = "Benteng Kena!";
-                            status_color = 0x0C;
-                        } else if (!laser_active) {
-                            status_msg = "Monster Turun";
-                            status_color = (monster_y >= 5) ? 0x0C : 0x08;
-                        }
-                    }
-
-                    if (hp <= 0) {
-                        status_msg = "KALAH! [ENTER]";
-                        status_color = 0x0C;
-                    } else if (time_left == 0) {
-                        status_msg = "MENANG! [ENTER]";
-                        status_color = 0x0A;
-                    }
-
-                    need_redraw = 1;
-                }
-
-                if (need_redraw) {
+                if (local_redraw || g_win1_dirty) {
+                    g_win1_dirty = 0;
                     render_arena_win1(
-                        g_session->player_name, diff, g_word_pool->words[current_word_idx], typed_buf,
-                        score, g_session->score_record, time_left, hp, monster_y, laser_active,
-                        status_msg, status_color
+                        g_session->player_name, diff, g_word_pool->words[g_current_word_idx], g_typed_buf,
+                        g_score, g_session->score_record, g_time_left, g_hp, g_monster_y, g_laser_active,
+                        g_status_msg, g_status_color
                     );
                 }
             } else {
                 if (c == '\n') {
+                    g_battle_active = 0;
                     free_round_allocations();
                     break;
-                } else if (need_redraw) {
+                } else if (local_redraw || g_win1_dirty) {
+                    g_win1_dirty = 0;
                     render_arena_win1(
-                        g_session->player_name, diff, g_word_pool->words[current_word_idx], typed_buf,
-                        score, g_session->score_record, time_left, hp, monster_y, laser_active,
-                        status_msg, status_color
+                        g_session->player_name, diff, g_word_pool->words[g_current_word_idx], g_typed_buf,
+                        g_score, g_session->score_record, g_time_left, g_hp, g_monster_y, g_laser_active,
+                        g_status_msg, g_status_color
                     );
                 }
             }

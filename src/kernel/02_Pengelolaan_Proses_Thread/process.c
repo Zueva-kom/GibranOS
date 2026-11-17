@@ -34,6 +34,26 @@ static void copy_name(char* dest, const char* src, size_t max_len) {
     dest[i] = '\0';
 }
 
+static int name_eq(const char* a, const char* b) {
+    size_t i = 0;
+    if (a == NULL || b == NULL) return 0;
+    while (a[i] != '\0' && b[i] != '\0') {
+        if (a[i] != b[i]) return 0;
+        i++;
+    }
+    return a[i] == b[i];
+}
+
+static inline uint32_t irq_save(void) {
+    uint32_t flags;
+    __asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static inline void irq_restore(uint32_t flags) {
+    __asm__ volatile ("pushl %0; popfl" : : "r"(flags) : "memory", "cc");
+}
+
 /* Mencari slot proses yang masih kosong */
 static int find_free_process_slot(void) {
     for (int i = 0; i < MAX_PROCESSES; i++) {
@@ -42,6 +62,18 @@ static int find_free_process_slot(void) {
         }
     }
 
+    return -1;
+}
+
+/* Mencari slot proses TERMINATED dengan nama yang sama untuk digunakan kembali */
+static int find_terminated_process_by_name(const char* name) {
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        if (process_table[i].used &&
+            process_table[i].state == PROCESS_TERMINATED &&
+            name_eq(process_table[i].name, name)) {
+            return i;
+        }
+    }
     return -1;
 }
 
@@ -76,6 +108,9 @@ void process_init(void) {
         thread_table[i].stack_base = 0;
         thread_table[i].priority = 0;
         thread_table[i].time_slice = 0;
+        thread_table[i].total_ticks = 0;
+        thread_table[i].switches = 0;
+        thread_table[i].waiting_on = NULL;
         thread_table[i].parent_process = NULL;
         thread_table[i].next = NULL;
     }
@@ -98,12 +133,24 @@ pcb_t* process_create(
         return NULL;
     }
 
-    /* Mencari slot proses dan thread kosong */
-    int process_slot = find_free_process_slot();
-    int thread_slot = find_free_thread_slot();
+    uint32_t flags = irq_save();
+
+    int reused = 0;
+    int process_slot = find_terminated_process_by_name(name);
+    int thread_slot = -1;
+
+    if (process_slot >= 0 && process_table[process_slot].main_thread != NULL) {
+        reused = 1;
+        thread_slot = (int)(process_table[process_slot].main_thread - &thread_table[0]);
+    } else {
+        /* Mencari slot proses dan thread kosong */
+        process_slot = find_free_process_slot();
+        thread_slot = find_free_thread_slot();
+    }
 
     /* Memastikan slot tersedia */
     if (process_slot < 0 || thread_slot < 0) {
+        irq_restore(flags);
         return NULL;
     }
 
@@ -111,20 +158,25 @@ pcb_t* process_create(
     tcb_t* thread = &thread_table[thread_slot];
 
     /* Mengisi informasi PCB */
-    proc->pid = next_pid++;
-    copy_name(proc->name, name, sizeof(proc->name));
+    if (!reused) {
+        proc->pid = next_pid++;
+        copy_name(proc->name, name, sizeof(proc->name));
+        proc->main_thread = thread;
+        proc->used = 1;
+        thread->tid = next_tid++;
+        thread->next = NULL;
+    }
     proc->state = PROCESS_NEW;
     proc->privilege = priv;
-    proc->main_thread = thread;
-    proc->used = 1;
 
     /* Mengisi informasi TCB */
-    thread->tid = next_tid++;
     thread->state = PROCESS_NEW;
     thread->priority = priority;
-    thread->time_slice = 10;
+    thread->time_slice = 0;
+    thread->total_ticks = 0;
+    thread->switches = 0;
+    thread->waiting_on = NULL;
     thread->parent_process = proc;
-    thread->next = NULL;
 
     /* Menyiapkan stack thread */
     uint32_t stack_top =
@@ -163,8 +215,11 @@ pcb_t* process_create(
 
     /* Memasukkan thread ke status READY */
     process_set_state(thread, PROCESS_READY);
-    scheduler_add_thread(thread);
+    if (!reused) {
+        scheduler_add_thread(thread);
+    }
 
+    irq_restore(flags);
     return proc;
 }
 
@@ -262,4 +317,19 @@ uint32_t process_get_count(void) {
     }
 
     return count;
+}
+
+/* Menghentikan proses dan mengubah statusnya menjadi TERMINATED */
+void process_terminate(pcb_t* proc) {
+    if (proc == NULL) {
+        return;
+    }
+
+    uint32_t flags = irq_save();
+    proc->state = PROCESS_TERMINATED;
+    if (proc->main_thread != NULL) {
+        proc->main_thread->state = PROCESS_TERMINATED;
+        proc->main_thread->waiting_on = NULL;
+    }
+    irq_restore(flags);
 }
