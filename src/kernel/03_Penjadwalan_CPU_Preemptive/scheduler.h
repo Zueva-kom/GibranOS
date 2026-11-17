@@ -11,5 +11,6 @@ void scheduler_add_thread(tcb_t* thread);
 tcb_t* scheduler_pick_next(void);
 tcb_t* scheduler_tick(void);
 tcb_t* scheduler_get_current(void);
+uint32_t scheduler_get_switch_count(void);
 
 #endif
