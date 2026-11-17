@@ -1,5 +1,15 @@
 #include "mutex.h"
 
+static inline uint32_t mutex_irq_save(void) {
+    uint32_t flags;
+    __asm__ volatile ("pushfl; popl %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static inline void mutex_irq_restore(uint32_t flags) {
+    __asm__ volatile ("pushl %0; popfl" : : "r"(flags) : "memory", "cc");
+}
+
 void mutex_init(mutex_t* m) {
     if (!m) return;
     m->locked = 0;
@@ -11,25 +21,43 @@ void mutex_lock(mutex_t* m) {
     if (!m) return;
     tcb_t* current = process_get_current_thread();
 
-    // Operasi atomik: coba ambil kunci. Jika sudah bernilai 1, tunggu.
-    while (__atomic_test_and_set(&m->locked, __ATOMIC_ACQUIRE)) {
+    while (1) {
+        /*
+         * Cek kunci + ubah status dilakukan dengan interrupt mati, agar timer
+         * tidak memotong di tengah-tengah (mencegah "lost wake-up").
+         */
+        uint32_t flags = mutex_irq_save();
+
+        if (!__atomic_test_and_set(&m->locked, __ATOMIC_ACQUIRE)) {
+            m->owner = current;
+            if (current) {
+                current->waiting_on = NULL;
+                process_set_state(current, PROCESS_RUNNING);
+            }
+            mutex_irq_restore(flags);
+            return;
+        }
+
+        /* Kunci sedang dipegang thread lain -> thread ini masuk WAITING */
         if (current) {
             current->waiting_on = (void*)m;
             process_set_state(current, PROCESS_WAITING);
         }
-        // Istirahatkan CPU sejenak sambil menunggu giliran scheduler
-        __asm__ volatile ("pause");
-    }
+        mutex_irq_restore(flags);
 
-    if (current) {
-        current->waiting_on = NULL;
-        process_set_state(current, PROCESS_RUNNING);
-        m->owner = current;
+        /*
+         * Tunggu timer interrupt berikutnya. Karena status WAITING, scheduler
+         * Round Robin melewati thread ini sampai mutex_unlock() membuatnya READY.
+         */
+        __asm__ volatile ("hlt");
     }
 }
 
 void mutex_unlock(mutex_t* m) {
     if (!m) return;
+
+    uint32_t flags = mutex_irq_save();
+
     m->owner = NULL;
     __atomic_clear(&m->locked, __ATOMIC_RELEASE);
 
@@ -44,4 +72,6 @@ void mutex_unlock(mutex_t* m) {
             }
         }
     }
+
+    mutex_irq_restore(flags);
 }

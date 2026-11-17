@@ -13,6 +13,7 @@
 #include "arch/i386/timer.h"
 #include "kernel/03_Penjadwalan_CPU_Preemptive/scheduler.h"
 #include "kernel/04_Sinkronisasi/mutex.h"
+#include "kernel/05_Deadlock/deadlock.h"
 
 #define VGA_WIDTH        80
 #define VGA_HEIGHT       25
@@ -211,14 +212,14 @@ static int str_starts_with(const char* str, const char* prefix) {
 }
 
 void print_banner(void) {
-    vga_print("==================================================\n", 0x0B);
+    vga_print("=====================================================================================\n", 0x0B);
     vga_print("     /\\          ██████╗  ██████╗ ███████╗\n", 0x0B);
     vga_print("    /  \\        ██╔════╝ ██╔═══██╗██╔════╝\n", 0x0B);
     vga_print("   / /\\ \\       ██║  ███╗██║   ██║███████╗\n", 0x0B);
     vga_print("  / /  \\ \\      ██║   ██║██║   ██║╚════██║\n", 0x0B);
     vga_print(" /_/__  \\_\\     ╚██████╔╝╚██████╔╝███████║\n", 0x0B);
     vga_print("   \\_____/       ╚═════╝  ╚═════╝ ╚══════╝\n", 0x0B);
-    vga_print("==================================================\n", 0x0B);
+    vga_print("=====================================================================================\n", 0x0B);
 }
 
 void system_shutdown(void) {
@@ -279,7 +280,6 @@ static void vga_print_number(size_t number) {
  * [4] SINKRONISASI (MUTEX) & [5] DEADLOCK
  * ========================================================================= */
 static mutex_t game_score_mutex;
-static mutex_t game_vfs_mutex;
 static volatile uint32_t shared_game_score = 0;
 
 static void run_mutex_sync_demo(void) {
@@ -315,46 +315,6 @@ static void run_mutex_sync_demo(void) {
     vga_print("2. Dengan game_score_mutex      : ", 0x0A);
     vga_print_number(shared_game_score);
     vga_print(" / 2000 poin (Konsisten!)\n", 0x0A);
-}
-
-static void run_deadlock_demo(void) {
-    mutex_init(&game_score_mutex);
-    mutex_init(&game_vfs_mutex);
-
-    vga_print("=== [5] DEMONSTRASI DEADLOCK (CIRCULAR WAIT) ===\n", 0x0C);
-    mutex_lock(&game_score_mutex);
-    vga_print("[Thread GameInput] Mengunci game_score_mutex -> Menunggu game_vfs_mutex...\n", 0x0E);
-
-    mutex_lock(&game_vfs_mutex);
-    vga_print("[Thread AutoSave]  Mengunci game_vfs_mutex   -> Menunggu game_score_mutex...\n", 0x0E);
-
-    vga_print("[DEADLOCK!] Circular Wait terdeteksi! Kedua thread saling mengunci.\n", 0x0C);
-    vga_print("Jalankan perintah 'deadlock_fix' untuk melihat solusi Lock Ordering.\n", 0x07);
-
-    mutex_unlock(&game_vfs_mutex);
-    mutex_unlock(&game_score_mutex);
-}
-
-static void run_deadlock_fix_demo(void) {
-    mutex_init(&game_score_mutex);
-    mutex_init(&game_vfs_mutex);
-
-    vga_print("=== [5] SOLUSI DEADLOCK (LOCK ORDERING) ===\n", 0x0A);
-    vga_print("Aturan Urutan: Selalu kunci (1) game_score_mutex -> lalu (2) game_vfs_mutex.\n", 0x07);
-
-    mutex_lock(&game_score_mutex);
-    mutex_lock(&game_vfs_mutex);
-    vga_print("[Thread GameInput] Mengunci sesuai urutan (1 -> 2) -> Update skor selesai.\n", 0x0A);
-    mutex_unlock(&game_vfs_mutex);
-    mutex_unlock(&game_score_mutex);
-
-    mutex_lock(&game_score_mutex);
-    mutex_lock(&game_vfs_mutex);
-    vga_print("[Thread AutoSave]  Mengunci sesuai urutan (1 -> 2) -> Simpan scores.txt selesai.\n", 0x0A);
-    mutex_unlock(&game_vfs_mutex);
-    mutex_unlock(&game_score_mutex);
-
-    vga_print("[AMAN] Tidak terjadi Circular Wait. Eksekusi selesai tanpa Deadlock.\n", 0x0A);
 }
 
 static void cli_execute(const char* cmd) {
@@ -445,11 +405,11 @@ static void cli_execute(const char* cmd) {
 
     } else if (str_eq(cmd, "deadlock")) {
         if (!security_require_admin("deadlock")) return;
-        run_deadlock_demo();
+        deadlock_demo_run(0);
 
     } else if (str_eq(cmd, "deadlock_fix")) {
         if (!security_require_admin("deadlock_fix")) return;
-        run_deadlock_fix_demo();
+        deadlock_demo_run(1);
 
     } else if (str_eq(cmd, "access_test")) {
         vga_print("=== [8] STATUS PROTEKSI & HAK AKSES ===\n", 0x0E);
@@ -477,16 +437,33 @@ static void cli_execute(const char* cmd) {
 
             vga_print_number(proc->pid);
             vga_print("    ", 0x07);
-            vga_print(proc->name, 0x07);
-            vga_print("      ", 0x07);
-            vga_print(process_state_to_str(proc->state), 0x07);
-            vga_print("    ", 0x07);
+            /* Nama dibuat selebar 14 karakter */
+            {
+                int n = 0;
+                while (proc->name[n] != '\0') n++;
+                vga_print(proc->name, 0x07);
+                for (; n < 14; n++) vga_putchar(' ', 0x07);
+            }
+            /* Status dibuat selebar 13 karakter */
+            {
+                const char* st = process_state_to_str(proc->state);
+                int n = 0;
+                while (st[n] != '\0') n++;
+                vga_print(st, 0x07);
+                for (; n < 13; n++) vga_putchar(' ', 0x07);
+            }
 
             if (proc->main_thread != NULL) {
                 vga_print_number(proc->main_thread->tid);
-                vga_print("    ", 0x07);
-                vga_print(process_state_to_str(proc->main_thread->state), 0x07);
-                vga_print("      ", 0x07);
+                vga_print(proc->main_thread->tid < 10 ? "    " : "   ", 0x07);
+                /* Thread state dibuat selebar 14 karakter */
+                {
+                    const char* tst = process_state_to_str(proc->main_thread->state);
+                    int n = 0;
+                    while (tst[n] != '\0') n++;
+                    vga_print(tst, 0x07);
+                    for (; n < 14; n++) vga_putchar(' ', 0x07);
+                }
                 vga_print_number(proc->main_thread->total_ticks);
             } else {
                 vga_print("-", 0x07);
