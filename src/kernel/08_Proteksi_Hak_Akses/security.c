@@ -1,6 +1,7 @@
 #include "security.h"
 #include "../07_Virtual_File_System/vfs.h"
 #include "../../drivers/keyboard.h"
+#include "../../drivers/serial.h"
 #include <stddef.h>
 
 #define VGA_WIDTH  80
@@ -118,6 +119,11 @@ static void login_read_field(int row, int col, int field_width, char* out_buf, s
         }
 
         char c = keyboard_poll_char();
+        if (c == 0 && serial_has_data()) {
+            c = serial_getchar();
+            if (c == '\r') c = '\n';
+            else if (c == 0x7F) c = '\b';
+        }
         if (c == 0) {
             __asm__ volatile ("pause");
             continue;

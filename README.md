@@ -59,9 +59,10 @@ make
 ```bash
 make run
 ```
-Atau jalankan secara manual:
+Atau jalankan secara manual (tambahkan `-serial stdio` jika ingin berinteraksi melalui terminal serial host):
 ```bash
 qemu-system-i386 -kernel build/kernel.bin
+qemu-system-i386 -kernel build/kernel.bin -serial stdio
 ```
 
 ### 5. Membersihkan Hasil Build (*Clean*)
@@ -80,27 +81,34 @@ qemu-system-i386 -kernel build/kernel.bin
 
 ```text
 GibranOS/
-├── build/                    # Output hasil kompilasi (*.o dan kernel.bin)
-├── docs/                     # Dokumentasi laporan & catatan penggunaan AI
-│   └── ai_usage_log.md       # Log penggunaan Generative AI
-├── src/                      # Source Code utama Mini-OS
-│   ├── arch/                 # Kode spesifik arsitektur (GDT/IDT/ISR/Timer)
-│   ├── boot/                 # Bootstrapping & Linker Script
-│   │   ├── boot.s            # Entry point Multiboot 32-bit & alokasi stack awal
-│   │   └── linker.ld         # Konfigurasi tata letak memori kernel (load di 1MB)
-│   ├── drivers/              # Driver perangkat keras (Keyboard, Serial UART, VGA)
-│   ├── kernel/               # Inti Kernel GibranOS
-│   │   ├── main.c            # Fungsi utama kernel (kernel_main) & output VGA
-│   │   ├── fs/               # Virtual File System (VFS) & RAMDisk (Anggota 1)
-│   │   ├── memory/           # Dynamic Memory / Heap Allocator (Anggota 2)
-│   │   ├── process/          # PCB/TCB & Preemptive CPU Scheduler (Anggota 3)
-│   │   ├── sync/             # Sinkronisasi Mutex/Semaphore & Deadlock (Anggota 4)
-│   │   └── security/         # Proteksi memori & kontrol hak akses (Anggota 4)
-│   └── shell/                # Antarmuka CLI Shell & parser perintah internal
-├── tests/                    # Skenario pengujian modul (OOM, Race Condition, Deadlock)
-├── .gitignore                # Daftar file/folder yang diabaikan Git
-├── Makefile                  # Konfigurasi sistem build & runner QEMU
-└── README.md                 # Dokumentasi setup, struktur, dan troubleshooting
+├── build/                                      # Output hasil kompilasi (*.o dan kernel.bin)
+├── docs/                                       # Dokumentasi laporan & catatan penggunaan AI
+│   ├── ai_usage_log.md                         # Log penggunaan Generative AI (Lampiran 3)
+│   └── laporan_anggota1_boot_cli_vfs.md        # Dokumen Bab I, Bab II (Sub 1 & 7), Bab III, Lampiran 1 & 2
+├── src/                                        # Source Code utama Mini-OS
+│   ├── arch/i386/                              # Kode spesifik arsitektur x86 (GDT, IDT, PIT Timer IRQ0)
+│   ├── boot/                                   # Bootstrapping & Linker Script (Anggota 1)
+│   │   ├── boot.s                              # Entry point Multiboot 32-bit & alokasi stack awal 16 KB
+│   │   └── linker.ld                           # Konfigurasi tata letak memori kernel (load di 1 MB)
+│   ├── drivers/                                # Driver perangkat keras (Keyboard, Mouse, Serial UART, Port I/O)
+│   ├── kernel/                                 # Inti Kernel GibranOS
+│   │   ├── main.c                              # Inisialisasi kernel (kernel_main) & driver layar VGA
+│   │   ├── 02_Pengelolaan_Proses_Thread/       # PCB/TCB & manajemen status thread (Anggota 3)
+│   │   ├── 03_Penjadwalan_CPU_Preemptive/      # Preemptive Round Robin CPU Scheduler (Anggota 3)
+│   │   ├── 04_Sinkronisasi/                    # Sinkronisasi Mutex (Anggota 4)
+│   │   ├── 05_Deadlock/                        # Skenario & penanganan Deadlock (Anggota 4)
+│   │   ├── 06_Alokator_Memori_Dinamis/         # Dynamic Memory / First-Fit Heap Allocator (Anggota 2)
+│   │   ├── 07_Virtual_File_System/             # Virtual File System (VFS) berbasis RAMDisk (Anggota 1)
+│   │   ├── 08_Proteksi_Hak_Akses/              # Kontrol Hak Akses RBAC & Gateway Login (Anggota 4)
+│   │   └── game/                               # Aplikasi Multi-Window Game Typing Defense & Live Monitor
+│   └── shell/                                  # Antarmuka CLI Shell & parser perintah internal (Anggota 1)
+│       ├── shell.c
+│       └── shell.h
+├── tests/                                      # Skenario pengujian modul
+├── .gitignore                                  # Daftar file/folder yang diabaikan Git
+├── Makefile                                    # Konfigurasi sistem build & runner QEMU
+├── Panduan.md                                  # Panduan pembagian tugas kelompok & alur kerja Git
+└── README.md                                   # Dokumentasi setup, struktur, dan troubleshooting (Lampiran 1 & 2)
 ```
 
 ---

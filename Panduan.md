@@ -116,6 +116,8 @@ GIBRAN OS/
 │   │   ├── io.h
 │   │   ├── keyboard.c
 │   │   ├── keyboard.h
+│   │   ├── mouse.c
+│   │   ├── mouse.h
 │   │   ├── serial.c
 │   │   └── serial.h
 │   │
@@ -125,19 +127,16 @@ GIBRAN OS/
 │   │
 │   └── kernel/
 │       ├── main.c
-│       ├── 01_Bootstrapping_CLI/
 │       ├── 02_Pengelolaan_Proses_Thread/
 │       │   ├── process.c
 │       │   └── process.h
 │       ├── 03_Penjadwalan_CPU_Preemptive/
 │       │   ├── scheduler.h
-│       │   └── scheduler.c       (belum ada)
+│       │   └── scheduler.c
 │       ├── 04_Sinkronisasi/
 │       │   ├── mutex.c
 │       │   └── mutex.h
 │       ├── 05_Deadlock/
-│       │   ├── deadlock.c        (belum ada)
-│       │   └── deadlock.h        (belum ada)
 │       ├── 06_Alokator_Memori_Dinamis/
 │       │   ├── heap.c
 │       │   └── heap.h
@@ -145,8 +144,8 @@ GIBRAN OS/
 │       │   ├── vfs.c
 │       │   └── vfs.h
 │       ├── 08_Proteksi_Hak_Akses/
-│       │   ├── security.c        (belum ada)
-│       │   └── security.h        (belum ada)
+│       │   ├── security.c
+│       │   └── security.h
 │       └── game/
 │           ├── game.c
 │           └── game.h
